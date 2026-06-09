@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Translate</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' style='stop-color:%23a855f7'/><stop offset='100%25' style='stop-color:%23c084fc'/></linearGradient></defs><rect width='100' height='100' rx='20' fill='%231a1a24'/><text x='50' y='70' font-family='Arial,sans-serif' font-size='55' font-weight='bold' text-anchor='middle' fill='url(%23g)'>LT</text></svg>">
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/socket.io.min.js"></script>
+</head>
+<body>
+    <!-- Header -->
+    <header class="app-header">
+        <div class="header-left">
+            <h1 class="app-title">
+                <span class="title-logo-wrap" id="appTitleLogoWrap" role="button" tabindex="0" title="Double-click to replace logo image. Right-click to reset default LT logo.">
+                    <svg class="title-logo" id="defaultTitleLogo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <defs>
+                            <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" style="stop-color:#a855f7"/>
+                                <stop offset="100%" style="stop-color:#c084fc"/>
+                            </linearGradient>
+                        </defs>
+                        <rect width="100" height="100" rx="20" fill="#1a1a24"/>
+                        <text x="50" y="70" font-family="Arial, sans-serif" font-size="55" font-weight="bold" text-anchor="middle" fill="url(#logoGradient)">LT</text>
+                    </svg>
+                    <img class="title-logo-custom" id="customTitleLogo" alt="Custom app logo" style="display:none;" />
+                </span>
+                <span class="app-title-text" id="appTitleText" title="Double-click to edit title">Live Translate</span>
+            </h1>
+            <input id="appTitleLogoFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="display:none;" />
+            <span class="app-subtitle"></span>
+        </div>
+        <div class="header-right">
+            <label class="header-toggle">
+                <input type="checkbox" id="aiAutoCorrectHeader" />
+                <span class="toggle-label">✨ Auto-Correct</span>
+            </label>
+            <button class="btn-secondary" id="openSettingsModal">⚙️ Settings</button>
+        </div>
+    </header>
+
+    <div class="service-loading-banner" id="serviceLoadingBanner" style="display:none;" role="status" aria-live="polite">
+        <span class="service-loading-spinner" aria-hidden="true"></span>
+        <span id="serviceLoadingText">Services are still loading...</span>
+    </div>
+
+    <main class="app-main">
+
+        <!-- ============================================================ -->
+        <!-- Conversation Section -->
+        <!-- ============================================================ -->
+        <section class="merged-section" id="conversationSection">
+            <div class="section-title-inline section-title-centered">
+                <h2 id="conversationSessionTitle">No session selected</h2>
+                <button class="help-icon-btn" data-help-topic="conversation" title="Conversation help" aria-label="Conversation help">?</button>
+            </div>
+            <div class="conversation-controls">
+                <div class="session-identicon-control" id="sessionIconControl" title="Session icon (click or drag and drop image)">
+                    <img id="sessionIdenticonImage" class="session-identicon-image" alt="Session icon" title="Click or drop image to update" />
+                    <input id="sessionIconFile" type="file" accept=".png,.svg,.jpg,.jpeg,.gif" style="display:none;" />
+                </div>
+                <div class="conversation-session-actions">
+                    <button class="btn-secondary btn-session-icon" id="convNewSession" title="Create new session" aria-label="Create new session">+</button>
+                    <button class="btn-secondary btn-session-icon" id="openSessionsModal" title="Open sessions list" aria-label="Open sessions list">☰</button>
+                </div>
+            </div>
+
+            <div class="conversation-panels">
+                <!-- Left Panel (Speaker A) -->
+                <div class="conv-panel" id="convPanelLeft">
+                    <div class="conv-mic-device-row">
+                        <label class="conv-mic-device-label">🎤 Microphone</label>
+                        <select class="conv-mic-device-select" id="convLeftMicDevice"><option value="">Default microphone</option></select>
+                    </div>
+                    <div class="conv-panel-header">
+                        <select class="conv-lang-select" id="convLeftLang"></select>
+                        <button class="icon-btn mic-btn" id="convLeftMic" title="Start speaking">🎤</button>
+                        <button class="icon-btn tts-btn" id="convLeftTTS" title="Read last message">🔊</button>
+                        <span class="mic-state-badge" id="convLeftMicState">Not active</span>
+                        <span class="mic-status" id="convLeftMicStatus"></span>
+                    </div>
+                    <div class="conv-messages" id="convLeftMessages"></div>
+                    <div class="conv-input-area">
+                        <textarea id="convLeftInput" placeholder="Type or speak..." rows="2"></textarea>
+                        <button class="btn-send" id="convLeftSend">➤</button>
+                    </div>
+                </div>
+
+                <!-- Right Panel (Speaker B) -->
+                <div class="conv-panel" id="convPanelRight">
+                    <div class="conv-mic-device-row">
+                        <label class="conv-mic-device-label">🎤 Microphone</label>
+                        <select class="conv-mic-device-select" id="convRightMicDevice"><option value="">Default microphone</option></select>
+                    </div>
+                    <div class="conv-panel-header">
+                        <select class="conv-lang-select" id="convRightLang"></select>
+                        <button class="icon-btn mic-btn" id="convRightMic" title="Start speaking">🎤</button>
+                        <button class="icon-btn tts-btn" id="convRightTTS" title="Read last message">🔊</button>
+                        <span class="mic-state-badge" id="convRightMicState">Not active</span>
+                        <span class="mic-status" id="convRightMicStatus"></span>
+                    </div>
+                    <div class="conv-messages" id="convRightMessages"></div>
+                    <div class="conv-input-area">
+                        <textarea id="convRightInput" placeholder="Type or speak..." rows="2"></textarea>
+                        <button class="btn-send" id="convRightSend">➤</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Sessions Modal -->
+    <div class="app-modal" id="sessionsModal" aria-hidden="true">
+        <div class="app-modal-dialog">
+            <div class="app-modal-header">
+                <div class="section-title-inline">
+                    <h2>Session History</h2>
+                    <button class="help-icon-btn" data-help-topic="sessions" title="Session help" aria-label="Session help">?</button>
+                </div>
+                <button class="icon-btn" id="closeSessionsModal" title="Close">✕</button>
+            </div>
+            <div class="app-modal-body">
+            <div class="sessions-summary">
+                <div>
+                    <div class="sessions-summary-label">Current session</div>
+                    <div class="sessions-summary-title" id="activeSessionSummary">No session selected</div>
+                    <div class="sessions-summary-help">Use a saved session to continue translating into it, or manage a session to rename, export, or delete it.</div>
+                </div>
+                <button class="btn-secondary" id="viewActiveSession">Manage Active</button>
+            </div>
+            <div class="sessions-header">
+                <button class="btn-secondary" id="refreshSessions">↻ Refresh</button>
+            </div>
+            <div class="sessions-list" id="sessionsList">
+                <div class="empty-state">No sessions yet. Start translating to create a session.</div>
+            </div>
+            <div class="session-detail" id="sessionDetail" style="display:none;">
+                <div class="session-detail-header">
+                    <button class="btn-back" id="sessionBack">← Back</button>
+                    <div class="session-detail-title-wrap">
+                        <img id="sessionDetailIcon" class="session-identicon-image session-detail-identicon" alt="Session icon" title="Click or drag and drop image to update" />
+                        <h3 id="sessionTitle"></h3>
+                    </div>
+                    <div class="session-actions">
+                        <button class="btn-secondary" id="renameSession">Rename</button>
+                        <button class="btn-secondary" id="exportSession">Export</button>
+                        <button class="btn-danger" id="deleteSession">Delete</button>
+                    </div>
+                </div>
+                <div class="session-messages" id="sessionMessages"></div>
+            </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="app-modal" id="settingsModal" aria-hidden="true">
+        <div class="app-modal-dialog modal-settings">
+            <div class="app-modal-header">
+                <div class="section-title-inline">
+                    <h2>Settings</h2>
+                    <button class="help-icon-btn" data-help-topic="settings" title="Settings help" aria-label="Settings help">?</button>
+                </div>
+                <button class="icon-btn" id="closeSettingsModal" title="Close">✕</button>
+            </div>
+            <div class="app-modal-body">
+            <div class="settings-grid">
+                <!-- Reset Settings Button -->
+                <div class="settings-reset-row">
+                    <button class="btn-danger" id="resetSettingsBtn">
+                        🔄 Reset All Settings to Defaults
+                    </button>
+                    <span class="settings-reset-info">This will reset all your preferences, API keys, and voice settings.</span>
+                </div>
+
+                <!-- Translation Settings -->
+                <div class="settings-card">
+                    <div class="section-title-inline section-title-card">
+                        <h3>Translation</h3>
+                        <button class="help-icon-btn" data-help-topic="conversation" title="Translation help" aria-label="Translation help">?</button>
+                    </div>
+                    <p class="settings-desc">Set default translation engine once for both conversation sides.</p>
+                    <div class="setting-row">
+                        <label>Engine</label>
+                        <select id="convEngine">
+                            <option value="libretranslate">LibreTranslate</option>
+                            <option value="llm">AI / LLM</option>
+                        </select>
+                    </div>
+                    <div class="setting-row translation-llm-controls" style="display:none;">
+                        <label>Provider</label>
+                        <select id="convProvider"></select>
+                    </div>
+                    <div class="setting-row translation-llm-controls" style="display:none;">
+                        <label>Model</label>
+                        <select id="convModel"></select>
+                    </div>
+                </div>
+
+                <!-- LLM Provider Settings - Full Width -->
+                <div class="settings-card settings-card-full">
+                    <div class="section-title-inline section-title-card">
+                        <h3>AI / LLM Providers &amp; API Keys</h3>
+                        <button class="help-icon-btn" data-help-topic="providers" title="Provider help" aria-label="Provider help">?</button>
+                    </div>
+                    <p class="settings-desc">Configure provider connectivity and keys in one place. Save and Test are grouped per provider.</p>
+                    <div class="setting-row provider-priority-row">
+                        <label>API Key Priority</label>
+                        <select id="apiKeyPriority">
+                            <option value="client">User API key first</option>
+                            <option value="server">Server API key first</option>
+                        </select>
+                    </div>
+                    <div class="provider-config-list" id="providerConfigList"></div>
+                </div>
+
+                <!-- Speech Settings -->
+                <div class="settings-card">
+                    <div class="section-title-inline section-title-card">
+                        <h3>Speech Settings</h3>
+                        <button class="help-icon-btn" data-help-topic="speech" title="Speech settings help" aria-label="Speech settings help">?</button>
+                    </div>
+                    <p class="settings-desc">Configure speech-to-text engine and options.</p>
+                    <div class="setting-row">
+                        <label>STT Engine</label>
+                        <select id="sttEngine">
+                            <option value="web_speech_api">Web Speech API (Browser)</option>
+                            <option value="whisper">Whisper (Server-side)</option>
+                            <option value="ai_provider">AI Provider (Cloud STT)</option>
+                        </select>
+                    </div>
+                    <div class="whisper-info" id="whisperInfo"></div>
+
+                    <div class="setting-row" id="whisperModelRow" style="display:none;">
+                        <label>Whisper Model</label>
+                        <select id="whisperModel"></select>
+                    </div>
+
+                    <div class="setting-row" id="sttProviderRow" style="display:none;">
+                        <label>STT Provider</label>
+                        <select id="sttProvider"></select>
+                    </div>
+
+                    <div class="setting-row" id="sttModelRow" style="display:none;">
+                        <label>STT Model</label>
+                        <select id="sttModel"></select>
+                    </div>
+
+                    <div class="whisper-info" id="sttProviderInfo" style="display:none;"></div>
+
+                    <div class="setting-row playback-row">
+                        <label>Playback Voice Mode</label>
+                        <select id="voiceMode">
+                            <option value="single">Single Voice</option>
+                            <option value="alternate">Alternate Between Voices</option>
+                            <option value="random">Random Voice</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-row playback-voices-row">
+                        <label>Playback Voices</label>
+                        <div class="playback-voices-wrap">
+                            <select id="playbackVoices" multiple size="6"></select>
+                            <p class="settings-desc playback-help-text">Select one or more voices (Ctrl/Cmd+click for multiple).</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Glossary Management -->
+                <div class="settings-card">
+                    <div class="section-title-inline section-title-card">
+                        <h3>Glossaries</h3>
+                        <button class="help-icon-btn" data-help-topic="glossaries" title="Glossary help" aria-label="Glossary help">?</button>
+                    </div>
+                    <p class="settings-desc">Glossaries let you force preferred terminology so translations stay consistent across messages and sessions.</p>
+                    <p class="settings-help-inline">How to use: choose a file and click Import. Each upload replaces the current glossary with a single saved glossary named Glossary.</p>
+                    
+                    <!-- Import Section -->
+                    <div class="glossary-import-compact">
+                        <div class="glossary-import-fields">
+                            <input id="glossarySourceLang" type="text" placeholder="From (auto from conversation if blank)" class="glossary-input" />
+                            <input id="glossaryTargetLang" type="text" placeholder="To (auto from conversation if blank)" class="glossary-input" />
+                        </div>
+                        <div class="glossary-import-actions">
+                            <input id="glossaryFile" type="file" accept=".json,.csv,.tsv,.txt" />
+                            <select id="glossaryTemplateFormat" class="glossary-template-select">
+                                <option value="csv">CSV</option>
+                                <option value="json">JSON</option>
+                                <option value="tsv">TSV</option>
+                                <option value="txt">TXT</option>
+                            </select>
+                            <button class="btn-secondary" id="downloadGlossaryTemplate" title="Download template">📄 Download Template</button>
+                        </div>
+                        <p class="glossary-format-hint">Supported: JSON, CSV, TSV, TXT. CSV/TSV need source and target columns. Import overwrites the current Glossary. Press Enter in any field or click Import.</p>
+                    </div>
+                    
+                    <!-- Glossary List -->
+                    <div class="glossary-list" id="glossaryList"></div>
+                </div>
+            </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div class="app-modal" id="helpModal" aria-hidden="true">
+        <div class="app-modal-dialog">
+            <div class="app-modal-header">
+                <h2 id="helpModalTitle">Help</h2>
+                <button class="icon-btn" id="closeHelpModal" title="Close">✕</button>
+            </div>
+            <div class="app-modal-body">
+                <div class="help-modal-content" id="helpModalContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Virtual Keyboard Overlay -->
+    <div class="keyboard-overlay" id="keyboardOverlay" style="display:none;">
+        <div class="keyboard-container">
+            <div class="keyboard-header">
+                <select id="keyboardLayout"></select>
+                <button class="icon-btn" id="keyboardClose">✕</button>
+            </div>
+            <div class="keyboard-keys" id="keyboardKeys"></div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <footer class="app-footer">
+        <div class="footer-left">
+            <div class="status-indicators">
+                <span class="status-badge" id="offlineIndicator" style="display: none;" title="Running in offline mode">📡 Offline</span>
+                <span class="status-dot" id="libreStatus" title="LibreTranslate"></span>
+                <span class="status-dot" id="whisperStatus" title="Whisper STT"></span>
+            </div>
+        </div>
+        <div class="footer-center">Live Translate</div>
+        <div class="footer-right">
+            <a class="footer-github-link" href="https://github.com/jonesckevin/live-translate" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository">
+                <svg class="github-logo" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49C4 14.09 3.48 13.23 3.32 12.78c-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.63 7.63 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .22.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" fill="currentColor"></path>
+                </svg>
+                <span>GitHub</span>
+            </a>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="/static/api-manager.js"></script>
+    <script src="/static/speech-manager.js"></script>
+    <script src="/static/keyboard-manager.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

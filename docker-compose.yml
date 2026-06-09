@@ -1,0 +1,29 @@
+---
+
+services:
+  live-translate:
+    build:
+      context: .
+      args:
+        PYTHON_BASE: ${PYTHON_BASE:-python:3.11-slim}
+    container_name: live-translate
+    ports:
+      - "9015:5000"
+    environment:
+      - LIBRETRANSLATE_LOCAL_ENABLED=${LIBRETRANSLATE_LOCAL_ENABLED:-true}
+      - LIBRETRANSLATE_LOCAL_URL=${LIBRETRANSLATE_LOCAL_URL:-http://127.0.0.1:5001}
+      - LIBRETRANSLATE_SERVER_URL=${LIBRETRANSLATE_SERVER_URL:-http://libretranslate:5000}
+      - SESSION_ICON_DIR=${SESSION_ICON_DIR:-/tmp/session-icons}
+    volumes:
+      - ./data:/data
+      - ./data/whisper-model:/data/whisper-model
+      - ./data/cache/huggingface:/root/.cache/huggingface
+      - ./data/cache/pip:/root/.cache/pip
+      - ./data/cache/libretranslate-local:/root/.local
+      # Optional host mapping for session icon uploads (disabled by default):
+      # 1) Uncomment next line
+      # 2) Set SESSION_ICON_DIR=/app/session-icons in .env
+      - ./data/session-icons:/app/session-icons
+    env_file:
+      - .env
+    restart: unless-stopped

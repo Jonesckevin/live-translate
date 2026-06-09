@@ -1,0 +1,152 @@
+{
+    "app": {
+        "title": "Live Translate",
+        "subtitle": "",
+        "footer_text": "Live Translate"
+    },
+    "translation": {
+        "default_source_language": "auto",
+        "default_target_language": "en",
+        "simultaneous_targets_limit": 5,
+        "available_languages": [
+            {"code": "auto", "name": "Auto Detect", "source_only": true},
+            {"code": "en", "name": "English"},
+            {"code": "fr", "name": "French"},
+            {"code": "uk", "name": "Ukrainian"},
+            {"code": "ru", "name": "Russian"},
+            {"code": "de", "name": "German"},
+            {"code": "es", "name": "Spanish"},
+            {"code": "it", "name": "Italian"},
+            {"code": "pt", "name": "Portuguese"},
+            {"code": "zh", "name": "Chinese (Simplified)"},
+            {"code": "ja", "name": "Japanese"},
+            {"code": "ko", "name": "Korean"},
+            {"code": "ar", "name": "Arabic"},
+            {"code": "hi", "name": "Hindi"},
+            {"code": "th", "name": "Thai"},
+            {"code": "vi", "name": "Vietnamese"},
+            {"code": "tr", "name": "Turkish"},
+            {"code": "pl", "name": "Polish"},
+            {"code": "nl", "name": "Dutch"},
+            {"code": "sv", "name": "Swedish"},
+            {"code": "da", "name": "Danish"},
+            {"code": "fi", "name": "Finnish"},
+            {"code": "nb", "name": "Norwegian"},
+            {"code": "el", "name": "Greek"},
+            {"code": "cs", "name": "Czech"},
+            {"code": "ro", "name": "Romanian"},
+            {"code": "hu", "name": "Hungarian"},
+            {"code": "he", "name": "Hebrew"},
+            {"code": "id", "name": "Indonesian"},
+            {"code": "ms", "name": "Malay"},
+            {"code": "tl", "name": "Filipino"},
+            {"code": "fa", "name": "Persian"},
+            {"code": "ur", "name": "Urdu"},
+            {"code": "bn", "name": "Bengali"},
+            {"code": "ta", "name": "Tamil"},
+            {"code": "te", "name": "Telugu"},
+            {"code": "sw", "name": "Swahili"}
+        ]
+    },
+    "libretranslate": {
+        "enabled": true,
+        "timeout_seconds": 30
+    },
+    "llm": {
+        "default_provider": "ollama",
+        "request_timeout_seconds": 120,
+        "providers": {
+            "ollama": {
+                "name": "Ollama",
+                "default_host": "localhost",
+                "default_port": 11434,
+                "default_protocol": "http",
+                "requires_key": false
+            },
+            "lmstudio": {
+                "name": "LM Studio",
+                "default_host": "localhost",
+                "default_port": 1234,
+                "default_protocol": "http",
+                "requires_key": false
+            },
+            "openai": {
+                "name": "OpenAI",
+                "base_url": "https://api.openai.com/v1",
+                "default_model": "gpt-4o-mini",
+                "stt_supported": true,
+                "stt_models": ["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-4o-transcribe-diarize", "whisper-1"],
+                "stt_default_model": "gpt-4o-mini-transcribe",
+                "requires_key": true
+            },
+            "anthropic": {
+                "name": "Anthropic",
+                "base_url": "https://api.anthropic.com/v1",
+                "default_model": "claude-sonnet-4-5-20250929",
+                "requires_key": true
+            },
+            "gemini": {
+                "name": "Gemini",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                "default_model": "gemini-1.5-flash",
+                "requires_key": true
+            },
+            "deepseek": {
+                "name": "DeepSeek",
+                "base_url": "https://api.deepseek.com/v1",
+                "default_model": "deepseek-chat",
+                "requires_key": true
+            },
+            "cohere": {
+                "name": "Cohere",
+                "base_url": "https://api.cohere.ai/compatibility/v1",
+                "default_model": "command-r-plus",
+                "requires_key": true
+            },
+            "groq": {
+                "name": "Groq",
+                "base_url": "https://api.groq.com/openai/v1",
+                "default_model": "llama-3.3-70b-versatile",
+                "stt_supported": true,
+                "stt_models": ["whisper-large-v3-turbo", "whisper-large-v3"],
+                "stt_default_model": "whisper-large-v3-turbo",
+                "requires_key": true
+            },
+            "grok": {
+                "name": "Grok (X.AI)",
+                "base_url": "https://api.x.ai/v1",
+                "default_model": "grok-beta",
+                "requires_key": true
+            },
+            "mistral": {
+                "name": "Mistral AI",
+                "base_url": "https://api.mistral.ai/v1",
+                "default_model": "mistral-small-latest",
+                "requires_key": true
+            },
+            "perplexity": {
+                "name": "Perplexity",
+                "base_url": "https://api.perplexity.ai",
+                "default_model": "sonar",
+                "requires_key": true
+            }
+        }
+    },
+    "speech": {
+        "default_engine": "web_speech_api",
+        "whisper_model": "base",
+        "whisper_language": "auto"
+    },
+    "glossary": {
+        "enabled": true,
+        "max_entries_per_glossary": 500
+    },
+    "session": {
+        "auto_save": true,
+        "retention_days": 30
+    },
+    "storage": {
+        "auto_cleanup_enabled": false,
+        "auto_cleanup_days": 30
+    }
+}
