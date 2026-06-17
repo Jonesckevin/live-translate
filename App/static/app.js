@@ -21,6 +21,14 @@
         right: createLiveState(),
     };
     const convSpeechInstances = { left: null, right: null };
+    const convMicControllers = { left: null, right: null };
+    const pushToTalkState = {
+        left: { code: '' },
+        right: { code: '' },
+        captureSide: null,
+        activeSides: new Set(),
+        listenersBound: false,
+    };
     let socketConnectedOnce = false;
     let lastSocketConnectAt = 0;
     let userSettings = {};
@@ -68,9 +76,12 @@
                     api_keys: {},
                     provider_models: {},
                     translation_engine: 'libretranslate',
-                    translation_provider: 'anthropic',
+                    translation_provider: 'openai',
                     translation_model: '',
                     stt_engine: 'web_speech_api',
+                    speech_mode: 'standard',
+                    offline_mode: 'auto',
+                    offline_strict: false,
                     voice_mode: 'single',
                     playback_voices: [],
                 };
@@ -433,7 +444,7 @@
             },
             speech: {
                 title: 'Speech Settings Help',
-                html: '<p>Speech settings control recognition and playback output.</p><ul><li>Web Speech API is browser-based.</li><li>Whisper is server-based and better for offline use.</li><li>Choose voice mode and select one or more playback voices.</li></ul>',
+                html: '<p>Speech settings control speech-to-text recognition, playback output, and privacy/offline behavior.</p><h4>STT Engine (Data Security)</h4><ul><li><strong>Web Speech API (Browser):</strong> All processing happens in your browser. No data sent to any server. Fastest but may be less accurate. Works offline.</li><li><strong>Whisper (Server-side):</strong> Audio sent only to your local server. More accurate than browser STT. Requires Whisper enabled on server.</li><li><strong>AI Provider (Cloud STT):</strong> Audio sent to external AI service (OpenAI, Google, etc.). Most accurate but lowest privacy. Requires Internet and API key.</li></ul><h4>Speech Mode</h4><ul><li><strong>Standard:</strong> Traditional flow: speech → text → translate → speak. Clear latency but reliable. All data stays local unless you use cloud STT/LLM.</li></ul><h4>Offline Mode (Privacy Control)</h4><ul><li><strong>Auto Detect:</strong> Automatically detects Internet and uses local services when offline. Uses online services when Internet is available.</li><li><strong>Force Offline:</strong> Only uses local services (Whisper + LibreTranslate). Maximum privacy. All data stays on your server. May fail if services not enabled.</li><li><strong>Force Online:</strong> Uses cloud services. Requires Internet. May use external APIs for translation and STT.</li></ul><h4>Offline Strict</h4><ul><li><strong>Enabled:</strong> Strictly refuses all online services. Zero external data sent. Maximum privacy mode.</li><li><strong>Disabled:</strong> App may use online services if configured and available.</li></ul><h4>Playback Voice Mode</h4><ul><li><strong>Single Voice:</strong> Same voice used every time output is spoken.</li><li><strong>Alternate:</strong> Switches between selected voices on each playback.</li><li><strong>Random:</strong> Randomly picks from selected voices.</li></ul><h4>Playback Voices (Privacy)</h4><ul><li>All playback voices are <strong>processed locally</strong> in your browser.</li><li>No audio data is sent to external services.</li><li>Select multiple voices if using Alternate or Random mode.</li></ul>',
             },
             glossaries: {
                 title: 'Glossary Help',
@@ -791,97 +802,147 @@
 
     function setupConvMic(side) {
         const micBtn = document.getElementById(`conv${cap(side)}Mic`);
+        const pttBtn = document.getElementById(`conv${cap(side)}PTT`);
         const micStateEl = document.getElementById(`conv${cap(side)}MicState`);
         const statusEl = document.getElementById(`conv${cap(side)}MicStatus`);
         const deviceSelect = document.getElementById(`conv${cap(side)}MicDevice`);
         const speechInst = new SpeechManager();
         const state = convLiveState[side];
         convSpeechInstances[side] = speechInst;
+        pushToTalkState[side].code = loadPushToTalkBinding(side);
         let pendingIdleTimer = null;
 
         setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
+        refreshPushToTalkButton(side);
+
+        speechInst.onResult = (result) => {
+            if (result.interim) {
+                state.interimText = result.interim.trim();
+                const liveText = `${state.finalText} ${state.interimText}`.trim();
+                queueLiveConversationTranslate(side, liveText, false);
+            }
+
+            if (result.isFinal && result.final) {
+                const finalChunk = result.final.trim();
+                if (finalChunk) {
+                    state.finalText = `${state.finalText} ${finalChunk}`.trim();
+                    state.interimText = '';
+                    queueLiveConversationTranslate(side, state.finalText, true);
+                }
+            }
+        };
+
+        speechInst.onStateChange = (stateName) => {
+            if (pendingIdleTimer) {
+                clearTimeout(pendingIdleTimer);
+                pendingIdleTimer = null;
+            }
+
+            if (stateName === 'listening') {
+                setMicButtonState(micBtn, 'active', 'Start speaking', micStateEl);
+                return;
+            }
+
+            if (stateName === 'processing') {
+                statusEl.textContent = 'Processing...';
+                setMicButtonState(micBtn, 'disabled', 'Start speaking', micStateEl);
+                return;
+            }
+
+            pendingIdleTimer = setTimeout(() => {
+                setMicButtonState(
+                    micBtn,
+                    speechInst.isListening ? 'active' : 'idle',
+                    'Start speaking',
+                    micStateEl
+                );
+            }, 220);
+
+            if (stateName === 'stopped') statusEl.textContent = '';
+        };
+
+        speechInst.onError = (msg) => {
+            if (pendingIdleTimer) {
+                clearTimeout(pendingIdleTimer);
+                pendingIdleTimer = null;
+            }
+            pushToTalkState.activeSides.delete(side);
+            refreshPushToTalkButton(side);
+            setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
+            showToast(msg, 'error');
+        };
+
+        const startListening = (trigger = 'toggle') => {
+            const lang = document.getElementById(`conv${cap(side)}Lang`).value;
+            const otherSide = side === 'left' ? 'right' : 'left';
+            const otherInst = convSpeechInstances[otherSide];
+            const engine = window.speechManager?.sttEngine || 'web_speech_api';
+
+            if (engine === 'web_speech_api' && otherInst?.isListening && otherInst.sttEngine === 'web_speech_api') {
+                showToast(
+                    'Browser speech recognition can only use one microphone at a time. ' +
+                    'To enable both sides simultaneously, go to Settings → STT Engine → Whisper.',
+                    'warning',
+                    8000
+                );
+                return false;
+            }
+
+            resetLiveState(side);
+            speechInst.setDeviceId(deviceSelect ? deviceSelect.value : '');
+            speechInst.setEngine(window.speechManager?.sttEngine || 'web_speech_api');
+
+            const started = speechInst.start(lang);
+            if (trigger === 'ptt') {
+                Promise.resolve(started).then(() => {
+                    if (!convMicControllers[side]?.pushToTalkHeld && speechInst.isListening) {
+                        convMicControllers[side]?.stopListening('ptt');
+                    }
+                }).catch(() => {});
+            }
+            return true;
+        };
+
+        const stopListening = (trigger = 'toggle') => {
+            if (speechInst.isListening) {
+                speechInst.stop();
+            }
+
+            if (trigger === 'toggle') {
+                setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
+                statusEl.textContent = '';
+            }
+        };
+
+        convMicControllers[side] = {
+            speechInst,
+            startListening,
+            stopListening,
+            pushToTalkHeld: false,
+        };
 
         micBtn.addEventListener('click', () => {
             if (speechInst.isListening) {
-                speechInst.stop();
-                setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
-                statusEl.textContent = '';
+                stopListening('toggle');
             } else {
-                const lang = document.getElementById(`conv${cap(side)}Lang`).value;
-                const otherSide = side === 'left' ? 'right' : 'left';
-                const otherInst = convSpeechInstances[otherSide];
-                const engine = window.speechManager?.sttEngine || 'web_speech_api';
-
-                // Web Speech API only allows ONE active recognition per tab.
-                // Block activation if the other side is already active with Web Speech.
-                if (engine === 'web_speech_api' && otherInst?.isListening && otherInst.sttEngine === 'web_speech_api') {
-                    showToast(
-                        'Browser speech recognition can only use one microphone at a time. ' +
-                        'To enable both sides simultaneously, go to Settings → STT Engine → Whisper.',
-                        'warning',
-                        8000
-                    );
-                    return;
-                }
-
-                resetLiveState(side);
-                speechInst.setDeviceId(deviceSelect ? deviceSelect.value : '');
-                speechInst.onResult = (result) => {
-                    if (result.interim) {
-                        state.interimText = result.interim.trim();
-                        const liveText = `${state.finalText} ${state.interimText}`.trim();
-                        queueLiveConversationTranslate(side, liveText, false);
-                    }
-
-                    if (result.isFinal && result.final) {
-                        const finalChunk = result.final.trim();
-                        if (finalChunk) {
-                            state.finalText = `${state.finalText} ${finalChunk}`.trim();
-                            state.interimText = '';
-                            queueLiveConversationTranslate(side, state.finalText, true);
-                        }
-                    }
-                };
-                speechInst.onStateChange = (state) => {
-                    if (pendingIdleTimer) {
-                        clearTimeout(pendingIdleTimer);
-                        pendingIdleTimer = null;
-                    }
-
-                    if (state === 'listening') {
-                        setMicButtonState(micBtn, 'active', 'Start speaking', micStateEl);
-                        return;
-                    }
-
-                    if (state === 'processing') {
-                        statusEl.textContent = 'Processing...';
-                        setMicButtonState(micBtn, 'disabled', 'Start speaking', micStateEl);
-                        return;
-                    }
-
-                    // Delay idle transition to avoid visual flicker during seamless auto-restart.
-                    pendingIdleTimer = setTimeout(() => {
-                        setMicButtonState(
-                            micBtn,
-                            speechInst.isListening ? 'active' : 'idle',
-                            'Start speaking',
-                            micStateEl
-                        );
-                    }, 220);
-                    if (state === 'stopped') statusEl.textContent = '';
-                };
-                speechInst.onError = (msg) => {
-                    if (pendingIdleTimer) {
-                        clearTimeout(pendingIdleTimer);
-                        pendingIdleTimer = null;
-                    }
-                    setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
-                    showToast(msg, 'error');
-                };
-                speechInst.setEngine(window.speechManager?.sttEngine || 'web_speech_api');
-                speechInst.start(lang);
+                startListening('toggle');
             }
         });
+
+        pttBtn?.addEventListener('click', () => {
+            setPushToTalkCapture(pushToTalkState.captureSide === side ? null : side);
+        });
+
+        pttBtn?.addEventListener('contextmenu', async (event) => {
+            event.preventDefault();
+            pushToTalkState.captureSide = null;
+            await savePushToTalkBinding(side, '');
+            refreshPushToTalkButton('left');
+            refreshPushToTalkButton('right');
+            showToast(`Push-to-talk cleared for ${side}`, 'info');
+        });
+
+        bindPushToTalkListeners();
     }
 
     function setupConvTTS(side) {
@@ -1087,18 +1148,6 @@
             ai_auto_correct: getAIAutoCorrectSetting(),
         });
 
-        if (isFinal && currentSessionId) {
-            fetch(`/api/sessions/${currentSessionId}/messages`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    source_text: text,
-                    source_language: srcLang,
-                    target_language: tgtLang,
-                    panel: side,
-                }),
-            }).catch(() => { });
-        }
     }
 
     function upsertLiveBubble(side, type, text, isLive, key, sourceSide, isTranslating) {
@@ -1192,6 +1241,23 @@
             );
 
             if (!data.interim) {
+                if (currentSessionId) {
+                    const srcLang = document.getElementById(`conv${cap(panel)}Lang`)?.value || 'en';
+                    const tgtLang = document.getElementById(`conv${cap(otherSide)}Lang`)?.value || 'fr';
+                    fetch(`/api/sessions/${currentSessionId}/messages`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            source_text: data.original_text || state.finalText || '',
+                            translated_text: translatedText,
+                            source_language: srcLang,
+                            target_language: tgtLang,
+                            engine: data.engine || 'libretranslate',
+                            panel: panel,
+                        }),
+                    }).catch(() => { });
+                }
+
                 if (state.sourceBubble) state.sourceBubble.classList.remove('live');
                 if (state.targetBubble) state.targetBubble.classList.remove('live');
                 state.sourceBubble = null;
@@ -1419,12 +1485,22 @@
             for (const msg of (data.messages || [])) {
                 const side = msg.panel || 'left';
                 const otherSide = side === 'left' ? 'right' : 'left';
+                const sourceText = String(msg.source_text || '').trim();
+                const translatedText = String(msg.translated_text || '').trim();
+
+                if (!sourceText && !translatedText) {
+                    continue;
+                }
                 
                 // Add source message on the sending side
-                createConvBubble(side, msg.source_text || '', 'original', false);
+                if (sourceText) {
+                    createConvBubble(side, sourceText, 'original', false);
+                }
                 
                 // Add translated message on the receiving side
-                createConvBubble(otherSide, msg.translated_text || '', 'translated', false);
+                if (translatedText) {
+                    createConvBubble(otherSide, translatedText, 'translated', false);
+                }
             }
         } catch (e) {
             console.error('Failed to restore session messages:', e);
@@ -2003,6 +2079,9 @@
         const sttModelRow = document.getElementById('sttModelRow');
         const sttModelSel = document.getElementById('sttModel');
         const sttProviderInfo = document.getElementById('sttProviderInfo');
+        const speechModeSel = document.getElementById('speechMode');
+        const offlineModeSel = document.getElementById('offlineMode');
+        const offlineStrictSel = document.getElementById('offlineStrict');
         const voiceModeSel = document.getElementById('voiceMode');
         const playbackVoicesSel = document.getElementById('playbackVoices');
 
@@ -2029,6 +2108,30 @@
         }
 
         sttSel.value = sttSettings.engine;
+
+        if (speechModeSel) {
+            speechModeSel.value = window.userSettings?.speech_mode || 'standard';
+            speechModeSel.addEventListener('change', async () => {
+                await updateSetting('speech_mode', speechModeSel.value);
+                showToast(`Speech mode: Standard`, 'success');
+            });
+        }
+
+        if (offlineModeSel) {
+            offlineModeSel.value = window.userSettings?.offline_mode || 'auto';
+            offlineModeSel.addEventListener('change', async () => {
+                await updateSetting('offline_mode', offlineModeSel.value);
+                showToast(`Offline mode: ${offlineModeSel.value}`, 'success');
+            });
+        }
+
+        if (offlineStrictSel) {
+            offlineStrictSel.checked = !!window.userSettings?.offline_strict;
+            offlineStrictSel.addEventListener('change', async () => {
+                await updateSetting('offline_strict', offlineStrictSel.checked);
+                showToast(`Offline strict: ${offlineStrictSel.checked ? 'Enabled' : 'Disabled'}`, 'success');
+            });
+        }
 
         const sttProviders = Object.entries(appConfig.llm?.providers || {})
             .filter(([, provider]) => provider.stt_supported);
@@ -2385,6 +2488,8 @@
             socketConnected: !!socket?.connected,
             offlineKnown: false,
             offline: false,
+            offlineReady: false,
+            offlineReason: '',
             libreAvailable: false,
             whisperEnabled: false,
             whisperReachable: false,
@@ -2392,20 +2497,31 @@
 
         // Offline Mode
         try {
-            const res = await fetch('/api/offline-status');
+            const res = await fetch('/api/offline-readiness');
             const data = await res.json();
             const indicator = document.getElementById('offlineIndicator');
+            const offlineReadyIndicator = document.getElementById('offlineReadyIndicator');
             status.offlineKnown = true;
             status.offline = !!data.offline;
-            if (data.offline) {
-                indicator.style.display = 'inline-block';
-                indicator.title = 'Running in offline mode - Using Whisper STT and local services only';
-            } else {
-                indicator.style.display = 'none';
+            status.offlineReady = !!data.ready;
+            status.offlineReason = data.reason || '';
+
+            if (indicator) {
+                indicator.style.display = data.offline ? 'inline-block' : 'none';
+                indicator.title = data.reason || 'Running in offline mode';
+            }
+
+            if (offlineReadyIndicator) {
+                offlineReadyIndicator.style.display = 'inline-block';
+                offlineReadyIndicator.textContent = data.ready ? '✅ Offline Ready' : '⚠ Offline Not Ready';
+                offlineReadyIndicator.className = data.ready ? 'status-badge ready' : 'status-badge warning';
+                offlineReadyIndicator.title = data.reason || 'Offline readiness status';
             }
         } catch {
-            // If we can't check, assume online
-            document.getElementById('offlineIndicator').style.display = 'none';
+            const indicator = document.getElementById('offlineIndicator');
+            const offlineReadyIndicator = document.getElementById('offlineReadyIndicator');
+            if (indicator) indicator.style.display = 'none';
+            if (offlineReadyIndicator) offlineReadyIndicator.style.display = 'none';
         }
 
         // LibreTranslate
@@ -2480,6 +2596,205 @@
 
         button.disabled = false;
         button.title = `${baseLabel} (${nextState === 'active' ? 'Active' : 'Not active'})`;
+    }
+
+    function getPushToTalkLocalStorageKey(side) {
+        return `lt_push_to_talk_${side}`;
+    }
+
+    function loadPushToTalkBinding(side) {
+        try {
+            return localStorage.getItem(getPushToTalkLocalStorageKey(side)) || '';
+        } catch {
+            return '';
+        }
+    }
+
+    function getPushToTalkButton(side) {
+        return document.getElementById(`conv${cap(side)}PTT`);
+    }
+
+    function getPushToTalkCode(side) {
+        return pushToTalkState[side]?.code || '';
+    }
+
+    function formatPushToTalkCode(code) {
+        if (!code) return 'Off';
+        if (code === 'Space') return 'Space';
+        if (code.startsWith('Key')) return code.slice(3).toUpperCase();
+        if (code.startsWith('Digit')) return code.slice(5);
+        if (code.startsWith('Numpad')) return `Num ${code.slice(6)}`;
+        if (code.startsWith('Arrow')) return code.slice(5);
+
+        const labels = {
+            Escape: 'Esc',
+            Backspace: 'Backspace',
+            Delete: 'Delete',
+            Tab: 'Tab',
+            Enter: 'Enter',
+            Minus: '-',
+            Equal: '=',
+            BracketLeft: '[',
+            BracketRight: ']',
+            Semicolon: ';',
+            Quote: '\'',
+            Backquote: '`',
+            Backslash: '\\',
+            Comma: ',',
+            Period: '.',
+            Slash: '/',
+            CapsLock: 'Caps',
+        };
+
+        return labels[code] || code;
+    }
+
+    function refreshPushToTalkButton(side) {
+        const button = getPushToTalkButton(side);
+        if (!button) return;
+
+        const code = getPushToTalkCode(side);
+        const label = formatPushToTalkCode(code);
+        const isCapturing = pushToTalkState.captureSide === side;
+        const isActive = pushToTalkState.activeSides.has(side);
+
+        button.classList.toggle('capturing', isCapturing);
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+
+        if (isCapturing) {
+            button.textContent = 'Press key...';
+            button.title = 'Press a key to set push-to-talk. Press Escape, Backspace, or Delete to clear.';
+            return;
+        }
+
+        button.textContent = code ? `PTT ${label}` : 'PTT Off';
+        button.title = code
+            ? `Push-to-talk keybind: ${label}. Click to change. Right-click to clear.`
+            : 'Push-to-talk is off. Click to set a keybind.';
+    }
+
+    function setPushToTalkCapture(side) {
+        pushToTalkState.captureSide = side;
+        refreshPushToTalkButton('left');
+        refreshPushToTalkButton('right');
+    }
+
+    async function savePushToTalkBinding(side, code) {
+        const otherSide = side === 'left' ? 'right' : 'left';
+        if (code && getPushToTalkCode(otherSide) === code) {
+            pushToTalkState[otherSide].code = '';
+            try {
+                localStorage.setItem(getPushToTalkLocalStorageKey(otherSide), '');
+            } catch {}
+            refreshPushToTalkButton(otherSide);
+        }
+
+        pushToTalkState[side].code = code;
+        try {
+            localStorage.setItem(getPushToTalkLocalStorageKey(side), code || '');
+        } catch {}
+        refreshPushToTalkButton(side);
+    }
+
+    function normalizePushToTalkCode(event) {
+        const code = event.code || '';
+        if (!code) return '';
+
+        const disallowed = new Set([
+            'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
+            'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight',
+        ]);
+
+        if (disallowed.has(code)) return '';
+        return code;
+    }
+
+    function bindPushToTalkListeners() {
+        if (pushToTalkState.listenersBound) return;
+        pushToTalkState.listenersBound = true;
+
+        document.addEventListener('keydown', async (event) => {
+            const captureSide = pushToTalkState.captureSide;
+            if (captureSide) {
+                event.preventDefault();
+                event.stopPropagation();
+
+                if (event.repeat) return;
+
+                if (['Escape', 'Backspace', 'Delete'].includes(event.code)) {
+                    pushToTalkState.captureSide = null;
+                    await savePushToTalkBinding(captureSide, '');
+                    showToast(`Push-to-talk cleared for ${captureSide}`, 'info');
+                    refreshPushToTalkButton('left');
+                    refreshPushToTalkButton('right');
+                    return;
+                }
+
+                const code = normalizePushToTalkCode(event);
+                if (!code) return;
+
+                pushToTalkState.captureSide = null;
+                await savePushToTalkBinding(captureSide, code);
+                showToast(`Push-to-talk set to ${formatPushToTalkCode(code)} for ${captureSide}`, 'success');
+                refreshPushToTalkButton('left');
+                refreshPushToTalkButton('right');
+                return;
+            }
+
+            if (event.repeat) return;
+
+            for (const side of ['left', 'right']) {
+                const code = getPushToTalkCode(side);
+                if (!code || code !== event.code) continue;
+
+                const controller = convMicControllers[side];
+                if (!controller) return;
+
+                event.preventDefault();
+                if (controller.speechInst?.isListening) return;
+                if (pushToTalkState.activeSides.has(side)) return;
+
+                pushToTalkState.activeSides.add(side);
+                refreshPushToTalkButton(side);
+                controller.pushToTalkHeld = true;
+                const started = controller.startListening('ptt');
+                if (started === false) {
+                    controller.pushToTalkHeld = false;
+                    pushToTalkState.activeSides.delete(side);
+                    refreshPushToTalkButton(side);
+                }
+                return;
+            }
+        });
+
+        document.addEventListener('keyup', (event) => {
+            for (const side of ['left', 'right']) {
+                const code = getPushToTalkCode(side);
+                if (!code || code !== event.code) continue;
+
+                const controller = convMicControllers[side];
+                if (!controller) return;
+
+                event.preventDefault();
+                controller.pushToTalkHeld = false;
+                pushToTalkState.activeSides.delete(side);
+                refreshPushToTalkButton(side);
+                controller.stopListening('ptt');
+                return;
+            }
+        });
+
+        window.addEventListener('blur', () => {
+            for (const side of ['left', 'right']) {
+                const controller = convMicControllers[side];
+                if (!controller || !pushToTalkState.activeSides.has(side)) continue;
+                controller.pushToTalkHeld = false;
+                pushToTalkState.activeSides.delete(side);
+                refreshPushToTalkButton(side);
+                controller.stopListening('ptt');
+            }
+        });
     }
 
     function summarizeProviderError(message) {

@@ -124,14 +124,30 @@ def mask_api_key(key):
         return None
     return f"●●●●●●{key[-6:]}"
 
+
+def _env_bool(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _env_value(name, default=''):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip()
+
 def is_offline_mode():
     """Detect if app should run in offline mode."""
-    # Check environment variable for explicit offline mode
-    env_offline = os.environ.get('OFFLINE_MODE', 'auto').lower()
+    env_offline = _env_value('OFFLINE_MODE', 'auto').lower()
     if env_offline == 'true':
         return True
     elif env_offline == 'false':
         return False
+
+    if _env_bool('OFFLINE_STRICT', False):
+        return True
     
     # Auto-detect: try to reach a reliable endpoint
     try:
@@ -140,6 +156,51 @@ def is_offline_mode():
         return False
     except (socket.error, socket.timeout):
         return True
+
+
+def build_offline_readiness_report():
+    settings = settings_manager.get_settings()
+    offline_mode = is_offline_mode()
+    strict_mode = _env_bool('OFFLINE_STRICT', bool(settings.get('offline_strict', False)))
+    configured_mode = settings.get('offline_mode', os.environ.get('OFFLINE_MODE', 'auto'))
+
+    libre_status = TranslationManager.check_libre_status(timeout=3, retries=1)
+    whisper_status = whisper_manager.get_status()
+
+    local_translation_ready = bool(libre_status.get('available'))
+    local_stt_ready = bool(whisper_status.get('enabled')) and bool(whisper_status.get('installed', True))
+    offline_ready = local_translation_ready and (not whisper_status.get('enabled') or local_stt_ready)
+
+    if offline_mode and not local_translation_ready:
+        reason = 'Offline mode is enabled, but embedded LibreTranslate is not ready yet.'
+    elif offline_mode and whisper_status.get('enabled') and not local_stt_ready:
+        reason = 'Offline mode is enabled, but Whisper is not ready yet.'
+    elif offline_mode and offline_ready:
+        reason = 'Offline mode is enabled and local services are ready.'
+    else:
+        reason = 'Online mode is active. Local offline mode remains available after setup.'
+
+    return {
+        'offline': offline_mode,
+        'enabled': offline_mode,
+        'ready': offline_ready,
+        'strict': strict_mode,
+        'mode': configured_mode,
+        'reason': reason,
+        'local_translation_ready': local_translation_ready,
+        'local_stt_ready': local_stt_ready,
+        'libretranslate_available': bool(libre_status.get('available')),
+        'libretranslate_warming_up': bool(libre_status.get('warming_up')),
+        'whisper_available': bool(whisper_status.get('enabled')),
+        'whisper_installed': bool(whisper_status.get('installed', True)),
+        'recommended_stt': 'whisper' if offline_mode else 'web_speech_api',
+        'cloud_llm_available': not offline_mode,
+        'local_llm_required': offline_mode,
+        'components': {
+            'libretranslate': libre_status,
+            'whisper': whisper_status,
+        },
+    }
 
 def get_api_key(provider, request_headers):
     key_source = request_headers.get('X-API-Key-Source', 'client')
@@ -459,16 +520,63 @@ def stt_transcribe_provider():
 @app.route('/api/offline-status')
 def offline_status():
     """Check if application is running in offline mode."""
-    offline = is_offline_mode()
-    whisper_enabled = whisper_manager.WHISPER_ENABLED
-    
+    return jsonify(build_offline_readiness_report())
+
+
+@app.route('/api/offline-readiness')
+def offline_readiness():
+    return jsonify(build_offline_readiness_report())
+
+
+@app.route('/api/live-audio/providers')
+def live_audio_providers():
     return jsonify({
-        'offline': offline,
-        'whisper_available': whisper_enabled,
-        'libretranslate_available': True,  # Always available as sidecar
-        'recommended_stt': 'whisper' if offline else 'web_speech_api',
-        'cloud_llm_available': not offline,
-        'local_llm_required': offline,
+        'enabled': True,
+        'default_mode': 'standard',
+        'modes': [
+            {
+                'id': 'standard',
+                'name': 'Standard',
+                'description': 'Current text/STT/TTS flow',
+            },
+        ],
+        'providers': [
+            {
+                'id': 'gemini_live_translate',
+                'name': 'Google Gemini 3.5 Live Translate',
+                'type': 'cloud',
+                'supports': ['speech_to_speech', 'speech_to_text'],
+                'transport': ['webrtc'],
+            },
+            {
+                'id': 'openai_realtime_translate',
+                'name': 'OpenAI gpt-realtime-translate',
+                'type': 'cloud',
+                'supports': ['speech_to_speech', 'speech_to_text'],
+                'transport': ['webrtc', 'websocket'],
+            },
+            {
+                'id': 'azure_speech_translation',
+                'name': 'Azure Speech Translation',
+                'type': 'cloud',
+                'supports': ['speech_to_text', 'text_to_speech'],
+                'transport': ['websocket'],
+            },
+            {
+                'id': 'seamlessm4t_local',
+                'name': 'Meta SeamlessM4T / SeamlessStreaming',
+                'type': 'local',
+                'supports': ['speech_to_speech', 'speech_to_text'],
+                'transport': ['websocket'],
+            },
+            {
+                'id': 'modular_local_stack',
+                'name': 'Whisper + Local MT + Piper/Coqui',
+                'type': 'local',
+                'supports': ['speech_to_text', 'text_to_speech'],
+                'transport': ['websocket'],
+            },
+        ],
     })
 
 # ============================================================================
