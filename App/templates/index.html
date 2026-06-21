@@ -240,32 +240,6 @@
                             <option value="ai_provider">AI Provider (Cloud STT)</option>
                         </select>
                     </div>
-                    <div class="setting-row">
-                        <label title="Speech mode controls how speech input is processed. Standard: traditional STT → translation → TTS flow.">Speech Mode</label>
-                        <select id="speechMode" title="Standard: traditional flow with clear latency.">
-                            <option value="standard">Standard</option>
-                        </select>
-                    </div>
-                    <div class="setting-row">
-                        <label title="
-                        Auto: detects Internet connectivity. 
-                        Force offline: uses only local services (Whisper, LibreTranslate)
-                        Force online: uses cloud services, may fail without Internet.">Offline Mode</label>
-                        <select id="offlineMode" title="
-                        Auto: smart detection. 
-                        Offline: only local services, highest privacy. 
-                        Online: cloud services, requires Internet.">
-                            <option value="auto">Auto detect</option>
-                            <option value="true">Force offline</option>
-                            <option value="false">Force online</option>
-                        </select>
-                    </div>
-                    <div class="setting-row">
-                        <label for="offlineStrict" title="
-                        When enabled, the app strictly refuses to use any online services even if available, maximizing privacy. 
-                        Disabled: app may use online services if configured. This setting enforces maximum data protection.">Offline Strict</label>
-                        <input id="offlineStrict" type="checkbox" title="Enabled: strictly offline only, zero external data sent. Disabled: may use online services if configured. Maximum privacy when checked." />
-                    </div>
                     <div class="whisper-info" id="whisperInfo"></div>
 
                     <div class="setting-row" id="whisperModelRow" style="display:none;">

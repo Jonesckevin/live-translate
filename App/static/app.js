@@ -21,6 +21,14 @@
         right: createLiveState(),
     };
     const convSpeechInstances = { left: null, right: null };
+    const convMicControllers = { left: null, right: null };
+    const pushToTalkState = {
+        left: { code: '' },
+        right: { code: '' },
+        captureSide: null,
+        activeSides: new Set(),
+        listenersBound: false,
+    };
     let socketConnectedOnce = false;
     let lastSocketConnectAt = 0;
     let userSettings = {};
@@ -81,6 +89,8 @@
                     translation_provider: 'anthropic',
                     translation_model: '',
                     stt_engine: 'web_speech_api',
+                    push_to_talk_left: '',
+                    push_to_talk_right: '',
                     voice_mode: 'single',
                     playback_voices: [],
                 };
@@ -696,6 +706,7 @@
         // Mic buttons
         setupConvMic('left');
         setupConvMic('right');
+        bindPushToTalkListeners();
 
         // TTS buttons
         setupConvTTS('left');
@@ -801,95 +812,341 @@
 
     function setupConvMic(side) {
         const micBtn = document.getElementById(`conv${cap(side)}Mic`);
+        const pttBtn = document.getElementById(`conv${cap(side)}PTT`);
         const micStateEl = document.getElementById(`conv${cap(side)}MicState`);
         const statusEl = document.getElementById(`conv${cap(side)}MicStatus`);
         const deviceSelect = document.getElementById(`conv${cap(side)}MicDevice`);
         const speechInst = new SpeechManager();
         const state = convLiveState[side];
         convSpeechInstances[side] = speechInst;
+        convMicControllers[side] = {
+            speechInst,
+            pushToTalkHeld: false,
+            startListening: null,
+            stopListening: null,
+        };
+        pushToTalkState[side].code = loadPushToTalkBinding(side);
         let pendingIdleTimer = null;
 
         setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
+        refreshPushToTalkButton(side);
 
-        micBtn.addEventListener('click', () => {
-            if (speechInst.isListening) {
-                speechInst.stop();
-                setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
-                statusEl.textContent = '';
-            } else {
-                const lang = document.getElementById(`conv${cap(side)}Lang`).value;
-                const otherSide = side === 'left' ? 'right' : 'left';
-                const otherInst = convSpeechInstances[otherSide];
-                const engine = window.speechManager?.sttEngine || 'web_speech_api';
+        const stopListening = (trigger = 'toggle') => {
+            if (!speechInst.isListening) return;
+            speechInst.stop();
+            if (trigger !== 'ptt') {
+                refreshPushToTalkButton(side);
+            }
+            return true;
+        };
 
-                // Web Speech API only allows ONE active recognition per tab.
-                // Block activation if the other side is already active with Web Speech.
-                if (engine === 'web_speech_api' && otherInst?.isListening && otherInst.sttEngine === 'web_speech_api') {
-                    showToast(
-                        'Browser speech recognition can only use one microphone at a time. ' +
-                        'To enable both sides simultaneously, go to Settings → STT Engine → Whisper.',
-                        'warning',
-                        8000
-                    );
+        const startListening = (trigger = 'toggle') => {
+            const lang = document.getElementById(`conv${cap(side)}Lang`).value;
+            const otherSide = side === 'left' ? 'right' : 'left';
+            const otherInst = convSpeechInstances[otherSide];
+            const engine = window.speechManager?.sttEngine || 'web_speech_api';
+
+            // Web Speech API only allows ONE active recognition per tab.
+            // Block activation if the other side is already active with Web Speech.
+            if (engine === 'web_speech_api' && otherInst?.isListening && otherInst.sttEngine === 'web_speech_api') {
+                showToast(
+                    'Browser speech recognition can only use one microphone at a time. ' +
+                    'To enable both sides simultaneously, go to Settings → STT Engine → Whisper.',
+                    'warning',
+                    8000
+                );
+                return false;
+            }
+
+            resetLiveState(side);
+            speechInst.setDeviceId(deviceSelect ? deviceSelect.value : '');
+            speechInst.onResult = (result) => {
+                if (result.interim) {
+                    state.interimText = result.interim.trim();
+                    const liveText = `${state.finalText} ${state.interimText}`.trim();
+                    queueLiveConversationTranslate(side, liveText, false);
+                }
+
+                if (result.isFinal && result.final) {
+                    const finalChunk = result.final.trim();
+                    if (finalChunk) {
+                        state.finalText = `${state.finalText} ${finalChunk}`.trim();
+                        state.interimText = '';
+                        queueLiveConversationTranslate(side, state.finalText, true);
+                    }
+                }
+            };
+            speechInst.onStateChange = (nextState) => {
+                if (pendingIdleTimer) {
+                    clearTimeout(pendingIdleTimer);
+                    pendingIdleTimer = null;
+                }
+
+                if (nextState === 'listening') {
+                    setMicButtonState(micBtn, 'active', 'Start speaking', micStateEl);
                     return;
                 }
 
-                resetLiveState(side);
-                speechInst.setDeviceId(deviceSelect ? deviceSelect.value : '');
-                speechInst.onResult = (result) => {
-                    if (result.interim) {
-                        state.interimText = result.interim.trim();
-                        const liveText = `${state.finalText} ${state.interimText}`.trim();
-                        queueLiveConversationTranslate(side, liveText, false);
-                    }
+                if (nextState === 'processing') {
+                    statusEl.textContent = 'Processing...';
+                    setMicButtonState(micBtn, 'disabled', 'Start speaking', micStateEl);
+                    return;
+                }
 
-                    if (result.isFinal && result.final) {
-                        const finalChunk = result.final.trim();
-                        if (finalChunk) {
-                            state.finalText = `${state.finalText} ${finalChunk}`.trim();
-                            state.interimText = '';
-                            queueLiveConversationTranslate(side, state.finalText, true);
-                        }
-                    }
-                };
-                speechInst.onStateChange = (state) => {
-                    if (pendingIdleTimer) {
-                        clearTimeout(pendingIdleTimer);
-                        pendingIdleTimer = null;
-                    }
+                pendingIdleTimer = setTimeout(() => {
+                    setMicButtonState(
+                        micBtn,
+                        speechInst.isListening ? 'active' : 'idle',
+                        'Start speaking',
+                        micStateEl
+                    );
+                }, 220);
+                if (nextState === 'stopped') statusEl.textContent = '';
+            };
+            speechInst.onError = (msg) => {
+                if (pendingIdleTimer) {
+                    clearTimeout(pendingIdleTimer);
+                    pendingIdleTimer = null;
+                }
+                pushToTalkState.activeSides.delete(side);
+                refreshPushToTalkButton(side);
+                setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
+                showToast(msg, 'error');
+            };
 
-                    if (state === 'listening') {
-                        setMicButtonState(micBtn, 'active', 'Start speaking', micStateEl);
-                        return;
-                    }
+            speechInst.setEngine(window.speechManager?.sttEngine || 'web_speech_api');
+            speechInst.start(lang);
+            return true;
+        };
 
-                    if (state === 'processing') {
-                        statusEl.textContent = 'Processing...';
-                        setMicButtonState(micBtn, 'disabled', 'Start speaking', micStateEl);
-                        return;
-                    }
+        convMicControllers[side].startListening = startListening;
+        convMicControllers[side].stopListening = stopListening;
 
-                    // Delay idle transition to avoid visual flicker during seamless auto-restart.
-                    pendingIdleTimer = setTimeout(() => {
-                        setMicButtonState(
-                            micBtn,
-                            speechInst.isListening ? 'active' : 'idle',
-                            'Start speaking',
-                            micStateEl
-                        );
-                    }, 220);
-                    if (state === 'stopped') statusEl.textContent = '';
-                };
-                speechInst.onError = (msg) => {
-                    if (pendingIdleTimer) {
-                        clearTimeout(pendingIdleTimer);
-                        pendingIdleTimer = null;
-                    }
-                    setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
-                    showToast(msg, 'error');
-                };
-                speechInst.setEngine(window.speechManager?.sttEngine || 'web_speech_api');
-                speechInst.start(lang);
+        micBtn.addEventListener('click', () => {
+            if (speechInst.isListening) {
+                stopListening('toggle');
+                setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
+                statusEl.textContent = '';
+            } else {
+                startListening('toggle');
+            }
+        });
+
+        pttBtn?.addEventListener('click', () => {
+            setPushToTalkCapture(pushToTalkState.captureSide === side ? null : side);
+        });
+
+        pttBtn?.addEventListener('contextmenu', async (event) => {
+            event.preventDefault();
+            pushToTalkState.captureSide = null;
+            await savePushToTalkBinding(side, '');
+            refreshPushToTalkButton('left');
+            refreshPushToTalkButton('right');
+            showToast(`Push-to-talk cleared for ${side}`, 'info');
+        });
+    }
+
+    function getPushToTalkButton(side) {
+        return document.getElementById(`conv${cap(side)}PTT`);
+    }
+
+    function getPushToTalkLocalStorageKey(side) {
+        return `lt_push_to_talk_${side}`;
+    }
+
+    function getPushToTalkCode(side) {
+        return pushToTalkState[side]?.code || '';
+    }
+
+    function loadPushToTalkBinding(side) {
+        const settingKey = side === 'left' ? 'push_to_talk_left' : 'push_to_talk_right';
+        const stored = String(userSettings?.[settingKey] || '').trim();
+        if (stored) return stored;
+
+        try {
+            return localStorage.getItem(getPushToTalkLocalStorageKey(side)) || '';
+        } catch {
+            return '';
+        }
+    }
+
+    function formatPushToTalkCode(code) {
+        if (!code) return 'Off';
+        if (code === 'Space') return 'Space';
+        if (code.startsWith('Key')) return code.slice(3).toUpperCase();
+        if (code.startsWith('Digit')) return code.slice(5);
+        if (code.startsWith('Numpad')) return `Num ${code.slice(6)}`;
+        if (code.startsWith('Arrow')) return code.slice(5);
+
+        const labels = {
+            Escape: 'Esc',
+            Backspace: 'Backspace',
+            Delete: 'Delete',
+            Tab: 'Tab',
+            Enter: 'Enter',
+            Minus: '-',
+            Equal: '=',
+            BracketLeft: '[',
+            BracketRight: ']',
+            Semicolon: ';',
+            Period: '.',
+            Slash: '/',
+            CapsLock: 'Caps',
+        };
+
+        return labels[code] || code;
+    }
+
+    function refreshPushToTalkButton(side) {
+        const button = getPushToTalkButton(side);
+        if (!button) return;
+
+        const code = getPushToTalkCode(side);
+        const label = formatPushToTalkCode(code);
+        const isCapturing = pushToTalkState.captureSide === side;
+        const isActive = pushToTalkState.activeSides.has(side);
+
+        button.classList.toggle('capturing', isCapturing);
+        button.classList.toggle('active', isActive);
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+
+        if (isCapturing) {
+            button.textContent = 'Press key...';
+            button.title = 'Press a key to set push-to-talk. Press Escape, Backspace, or Delete to clear.';
+            return;
+        }
+
+        button.textContent = code ? `PTT ${label}` : 'PTT Off';
+        button.title = code
+            ? `Push-to-talk keybind: ${label}. Click to change. Right-click to clear.`
+            : 'Push-to-talk is off. Click to set a keybind.';
+    }
+
+    function setPushToTalkCapture(side) {
+        pushToTalkState.captureSide = side;
+        refreshPushToTalkButton('left');
+        refreshPushToTalkButton('right');
+    }
+
+    async function savePushToTalkBinding(side, code) {
+        const otherSide = side === 'left' ? 'right' : 'left';
+        if (code && getPushToTalkCode(otherSide) === code) {
+            pushToTalkState[otherSide].code = '';
+            try {
+                localStorage.setItem(getPushToTalkLocalStorageKey(otherSide), '');
+            } catch {}
+            if (window.updateSetting) {
+                await window.updateSetting(otherSide === 'left' ? 'push_to_talk_left' : 'push_to_talk_right', '');
+            }
+            refreshPushToTalkButton(otherSide);
+        }
+
+        pushToTalkState[side].code = code;
+        try {
+            localStorage.setItem(getPushToTalkLocalStorageKey(side), code || '');
+        } catch {}
+        if (window.updateSetting) {
+            await window.updateSetting(side === 'left' ? 'push_to_talk_left' : 'push_to_talk_right', code || '');
+        }
+        refreshPushToTalkButton(side);
+    }
+
+    function normalizePushToTalkCode(event) {
+        const code = event.code || '';
+        if (!code) return '';
+
+        const disallowed = new Set([
+            'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
+            'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight',
+        ]);
+
+        if (disallowed.has(code)) return '';
+        return code;
+    }
+
+    function bindPushToTalkListeners() {
+        if (pushToTalkState.listenersBound) return;
+        pushToTalkState.listenersBound = true;
+
+        document.addEventListener('keydown', async (event) => {
+            const captureSide = pushToTalkState.captureSide;
+            if (captureSide) {
+                event.preventDefault();
+                event.stopPropagation();
+
+                if (event.repeat) return;
+
+                if (['Escape', 'Backspace', 'Delete'].includes(event.code)) {
+                    pushToTalkState.captureSide = null;
+                    await savePushToTalkBinding(captureSide, '');
+                    showToast(`Push-to-talk cleared for ${captureSide}`, 'info');
+                    refreshPushToTalkButton('left');
+                    refreshPushToTalkButton('right');
+                    return;
+                }
+
+                const code = normalizePushToTalkCode(event);
+                if (!code) return;
+
+                pushToTalkState.captureSide = null;
+                await savePushToTalkBinding(captureSide, code);
+                showToast(`Push-to-talk set to ${formatPushToTalkCode(code)} for ${captureSide}`, 'success');
+                refreshPushToTalkButton('left');
+                refreshPushToTalkButton('right');
+                return;
+            }
+
+            if (event.repeat) return;
+
+            for (const side of ['left', 'right']) {
+                const code = getPushToTalkCode(side);
+                if (!code || code !== event.code) continue;
+
+                const controller = convMicControllers[side];
+                if (!controller) return;
+
+                event.preventDefault();
+                if (controller.speechInst?.isListening) return;
+                if (pushToTalkState.activeSides.has(side)) return;
+
+                pushToTalkState.activeSides.add(side);
+                refreshPushToTalkButton(side);
+                controller.pushToTalkHeld = true;
+                const started = controller.startListening('ptt');
+                if (started === false) {
+                    controller.pushToTalkHeld = false;
+                    pushToTalkState.activeSides.delete(side);
+                    refreshPushToTalkButton(side);
+                }
+                return;
+            }
+        });
+
+        document.addEventListener('keyup', (event) => {
+            for (const side of ['left', 'right']) {
+                const code = getPushToTalkCode(side);
+                if (!code || code !== event.code) continue;
+
+                const controller = convMicControllers[side];
+                if (!controller) return;
+
+                event.preventDefault();
+                controller.pushToTalkHeld = false;
+                pushToTalkState.activeSides.delete(side);
+                refreshPushToTalkButton(side);
+                controller.stopListening('ptt');
+                return;
+            }
+        });
+
+        window.addEventListener('blur', () => {
+            for (const side of ['left', 'right']) {
+                const controller = convMicControllers[side];
+                if (!controller || !pushToTalkState.activeSides.has(side)) continue;
+                controller.pushToTalkHeld = false;
+                pushToTalkState.activeSides.delete(side);
+                refreshPushToTalkButton(side);
+                controller.stopListening('ptt');
             }
         });
     }
