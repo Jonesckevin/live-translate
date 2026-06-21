@@ -24,6 +24,6 @@ services:
       # 1) Uncomment next line
       # 2) Set SESSION_ICON_DIR=/app/session-icons in .env
       - ./data/session-icons:/app/session-icons
-    env_file:
-      - .env
+#    env_file:
+#      - .env
     restart: unless-stopped
