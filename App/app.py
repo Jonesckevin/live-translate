@@ -141,6 +141,43 @@ def is_offline_mode():
     except (socket.error, socket.timeout):
         return True
 
+
+def get_runtime_offline_state():
+    """Resolve effective offline policy from persisted settings + env/auto checks."""
+    settings = settings_manager.get_settings()
+    force_offline = bool(settings.get('force_offline', False))
+    detected_offline = is_offline_mode()
+    effective_offline = force_offline or detected_offline
+    return {
+        'offline': effective_offline,
+        'force_offline': force_offline,
+        'detected_offline': detected_offline,
+        'edge_fallback_allowed': not effective_offline,
+        'cloud_llm_available': not effective_offline,
+        'local_llm_required': effective_offline,
+    }
+
+
+def is_cloud_provider(provider):
+    if not provider:
+        return False
+    provider_cfg = LLMManager.PROVIDER_CONFIGS.get(provider, {})
+    return provider_cfg.get('type') != 'local'
+
+
+def apply_offline_translation_policy(engine, provider, model):
+    """Normalize translation request according to effective offline policy."""
+    mode_state = get_runtime_offline_state()
+    policy_warning = None
+
+    if mode_state['offline'] and engine == 'llm' and is_cloud_provider(provider):
+        engine = 'libretranslate'
+        provider = None
+        model = None
+        policy_warning = 'Force/local offline policy active: cloud LLM translation disabled, switched to LibreTranslate.'
+
+    return engine, provider, model, policy_warning, mode_state
+
 def get_api_key(provider, request_headers):
     key_source = request_headers.get('X-API-Key-Source', 'client')
     client_key = request_headers.get('X-API-Key', '')
@@ -246,6 +283,8 @@ def translate_text():
     provider = data.get('provider')
     model = data.get('model')
 
+    engine, provider, model, policy_warning, _ = apply_offline_translation_policy(engine, provider, model)
+
     # Get API key if LLM engine
     api_key = None
     custom_config = None
@@ -267,6 +306,9 @@ def translate_text():
         glossary=glossary if glossary else None,
         ai_auto_correct=data.get('ai_auto_correct', True),
     )
+
+    if policy_warning:
+        result['policy_warning'] = policy_warning
 
     # Persist successful translations whenever a session is active.
     if result.get('success'):
@@ -301,6 +343,8 @@ def translate_multi():
     provider = data.get('provider')
     model = data.get('model')
 
+    engine, provider, model, policy_warning, _ = apply_offline_translation_policy(engine, provider, model)
+
     limit = config.get('translation', {}).get('simultaneous_targets_limit', 5)
     target_langs = target_langs[:limit]
 
@@ -323,6 +367,8 @@ def translate_multi():
             glossary=glossary if glossary else None,
             ai_auto_correct=data.get('ai_auto_correct', True),
         )
+        if policy_warning:
+            results[lang]['policy_warning'] = policy_warning
 
     return jsonify({'results': results})
 
@@ -459,16 +505,19 @@ def stt_transcribe_provider():
 @app.route('/api/offline-status')
 def offline_status():
     """Check if application is running in offline mode."""
-    offline = is_offline_mode()
+    mode_state = get_runtime_offline_state()
     whisper_enabled = whisper_manager.WHISPER_ENABLED
     
     return jsonify({
-        'offline': offline,
+        'offline': mode_state['offline'],
+        'force_offline': mode_state['force_offline'],
+        'detected_offline': mode_state['detected_offline'],
         'whisper_available': whisper_enabled,
         'libretranslate_available': True,  # Always available as sidecar
-        'recommended_stt': 'whisper' if offline else 'web_speech_api',
-        'cloud_llm_available': not offline,
-        'local_llm_required': offline,
+        'recommended_stt': 'whisper' if mode_state['offline'] else 'web_speech_api',
+        'edge_fallback_allowed': mode_state['edge_fallback_allowed'],
+        'cloud_llm_available': mode_state['cloud_llm_available'],
+        'local_llm_required': mode_state['local_llm_required'],
     })
 
 # ============================================================================
@@ -826,6 +875,8 @@ def handle_translate(data):
     if request_id:
         g.request_id = str(request_id)
 
+    engine, provider, model, policy_warning, mode_state = apply_offline_translation_policy(engine, provider, model)
+
     api_key = data.get('api_key')
     api_key_source = data.get('api_key_source', 'client')
 
@@ -853,8 +904,11 @@ def handle_translate(data):
         ai_auto_correct=data.get('ai_auto_correct', True),
     )
 
+    if policy_warning:
+        result['policy_warning'] = policy_warning
+
     # If LibreTranslate fails, automatically fallback to LLM
-    if not result.get('success') and engine == 'libretranslate' and (provider or SERVER_API_KEYS.get('anthropic')):
+    if not result.get('success') and engine == 'libretranslate' and not mode_state['offline'] and (provider or SERVER_API_KEYS.get('anthropic')):
         app_logger.info(f"⚠ LibreTranslate failed, falling back to LLM provider")
         fallback_provider = provider or 'anthropic'
         fallback_model = model or 'claude-3-5-sonnet-20241022'
@@ -895,8 +949,13 @@ def run_preflight_checks():
     checks_passed = True
     
     # Check offline mode status
-    offline = is_offline_mode()
-    app_logger.info(f"✓ Offline mode: {'ENABLED' if offline else 'DISABLED'}")
+    mode_state = get_runtime_offline_state()
+    offline = mode_state['offline']
+    app_logger.info(
+        "✓ Offline mode: %s%s",
+        'ENABLED' if offline else 'DISABLED',
+        ' (forced by settings)' if mode_state['force_offline'] else '',
+    )
     
     # Check Whisper availability
     if whisper_manager.WHISPER_ENABLED:

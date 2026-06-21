@@ -14,6 +14,7 @@ SETTINGS_FILE = os.environ.get('SETTINGS_FILE', '/data/settings.json')
 
 DEFAULT_SETTINGS = {
     'ai_auto_correct': True,
+    'force_offline': False,
     'api_key_priority': 'client',
     'header_title': 'Live Translate',
     'header_logo_data_url': '',

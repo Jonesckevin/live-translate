@@ -26,6 +26,13 @@
     let userSettings = {};
     let serviceStatusTimer = null;
     let requiresInitialSessionSelection = true;
+    let runtimeOfflineStatus = {
+        known: false,
+        offline: false,
+        forceOffline: false,
+        edgeFallbackAllowed: true,
+    };
+    let lastOfflineCloudWarningAt = 0;
 
     // ========================================================================
     // Settings Management
@@ -57,11 +64,14 @@
                 if (window.llmAPIManager) {
                     window.llmAPIManager._loadFromSettings();
                 }
+
+                userSettings.force_offline = !!userSettings.force_offline;
                 
                 return userSettings;
             } else {
                 userSettings = {
                     ai_auto_correct: true,
+                    force_offline: false,
                     api_key_priority: 'client',
                     header_title: 'Live Translate',
                     header_logo_data_url: '',
@@ -1040,6 +1050,91 @@
         }, 250);
     }
 
+    function isCloudProvider(providerId) {
+        if (!providerId) return false;
+        return !!appConfig.llm?.providers?.[providerId]?.requires_key;
+    }
+
+    function isForceOfflineEnabled() {
+        return !!(runtimeOfflineStatus.forceOffline || userSettings.force_offline);
+    }
+
+    function warnCloudDisabledIfNeeded() {
+        const now = Date.now();
+        if ((now - lastOfflineCloudWarningAt) < 6000) return;
+        lastOfflineCloudWarningAt = now;
+        showToast('Force Offline is active. Cloud providers are disabled for this session.', 'warning', 3000);
+    }
+
+    function normalizeEdgeLanguage(language) {
+        const raw = (language || '').toLowerCase();
+        if (!raw || raw === 'auto') return '';
+        return raw.split('-')[0];
+    }
+
+    async function translateWithEdgeFallback(text, sourceLanguage, targetLanguage) {
+        if (!runtimeOfflineStatus.edgeFallbackAllowed || isForceOfflineEnabled()) {
+            return { success: false, error: 'Edge fallback disabled while offline mode is active.' };
+        }
+
+        const Translator = window.Translator;
+        if (!Translator || typeof Translator.availability !== 'function' || typeof Translator.create !== 'function') {
+            return { success: false, error: 'Edge Translator API is not available in this browser.' };
+        }
+
+        const src = normalizeEdgeLanguage(sourceLanguage);
+        const tgt = normalizeEdgeLanguage(targetLanguage);
+        if (!tgt) {
+            return { success: false, error: 'Target language is required for Edge fallback.' };
+        }
+
+        const options = { targetLanguage: tgt };
+        if (src) {
+            options.sourceLanguage = src;
+        }
+
+        try {
+            const availability = await Translator.availability(options);
+            if (availability === 'unavailable') {
+                return { success: false, error: `Edge model unavailable for ${src || 'auto'} → ${tgt}.` };
+            }
+            if (availability === 'downloadable' || availability === 'downloading') {
+                return {
+                    success: false,
+                    error: 'Edge translation model is not downloaded yet. Open Edge online once to download the model first.',
+                };
+            }
+
+            const translator = await Translator.create(options);
+            const translatedText = await translator.translate(text);
+            if (typeof translator.destroy === 'function') {
+                translator.destroy();
+            }
+            return {
+                success: true,
+                translated_text: translatedText,
+                engine: 'edge-translator (fallback)',
+            };
+        } catch (error) {
+            return { success: false, error: error?.message || 'Edge Translator fallback failed.' };
+        }
+    }
+
+    async function tryEdgeFallbackForPanel(panel, originalText) {
+        if (!originalText || !originalText.trim()) {
+            return { success: false, error: 'No text available for Edge fallback.' };
+        }
+
+        if (!runtimeOfflineStatus.edgeFallbackAllowed || isForceOfflineEnabled()) {
+            return { success: false, error: 'Edge fallback disabled by current offline policy.' };
+        }
+
+        const otherSide = panel === 'left' ? 'right' : 'left';
+        const srcLang = document.getElementById(`conv${cap(panel)}Lang`)?.value || 'auto';
+        const tgtLang = document.getElementById(`conv${cap(otherSide)}Lang`)?.value || 'en';
+        return await translateWithEdgeFallback(originalText, srcLang, tgtLang);
+    }
+
     function sendLiveConversationTranslate(side, text, isFinal) {
         const state = convLiveState[side];
         const otherSide = side === 'left' ? 'right' : 'left';
@@ -1065,6 +1160,17 @@
         const engine = document.getElementById('convEngine').value;
         const provider = document.getElementById('convProvider').value;
         const model = document.getElementById('convModel')?.value || getProviderModelPreference(provider);
+        let effectiveEngine = engine;
+        let effectiveProvider = provider;
+        let effectiveModel = model;
+
+        if (isForceOfflineEnabled() && effectiveEngine === 'llm' && isCloudProvider(effectiveProvider)) {
+            effectiveEngine = 'libretranslate';
+            effectiveProvider = null;
+            effectiveModel = null;
+            warnCloudDisabledIfNeeded();
+        }
+
         const apiKey = window.llmAPIManager ? window.llmAPIManager.getApiKey(provider) : '';
         const apiKeySource = window.llmAPIManager ? window.llmAPIManager.getApiKeyPriority() : 'client';
 
@@ -1075,9 +1181,9 @@
             text,
             source_language: srcLang,
             target_language: tgtLang,
-            engine,
-            provider,
-            model,
+            engine: effectiveEngine,
+            provider: effectiveProvider,
+            model: effectiveModel,
             panel: side,
             api_key: apiKey,
             api_key_source: apiKeySource,
@@ -1150,6 +1256,16 @@
         const engine = document.getElementById('convEngine').value;
         const provider = document.getElementById('convProvider').value;
         const model = document.getElementById('convModel')?.value || getProviderModelPreference(provider);
+        let effectiveEngine = engine;
+        let effectiveProvider = provider;
+        let effectiveModel = model;
+
+        if (isForceOfflineEnabled() && effectiveEngine === 'llm' && isCloudProvider(effectiveProvider)) {
+            effectiveEngine = 'libretranslate';
+            effectiveProvider = null;
+            effectiveModel = null;
+            warnCloudDisabledIfNeeded();
+        }
 
         // Show original message on sender side
         addConvBubble(side, text, 'original');
@@ -1159,14 +1275,19 @@
         const apiKeySource = window.llmAPIManager ? window.llmAPIManager.getApiKeyPriority() : 'client';
         socket.emit('translate', {
             text, source_language: srcLang, target_language: tgtLang,
-            engine, provider, model, panel: side, api_key: apiKey, api_key_source: apiKeySource,
+            engine: effectiveEngine,
+            provider: effectiveProvider,
+            model: effectiveModel,
+            panel: side,
+            api_key: apiKey,
+            api_key_source: apiKeySource,
             ai_auto_correct: getAIAutoCorrectSetting(),
         });
 
         // Message will be saved to session when translation is received (via handleSocketTranslation)
     }
 
-    function handleSocketTranslation(data) {
+    async function handleSocketTranslation(data) {
         const panel = data.panel || 'left';
         const otherSide = panel === 'left' ? 'right' : 'left';
 
@@ -1176,8 +1297,17 @@
                 return;
             }
 
-            let translatedText = data.success ? data.translated_text : `⚠ ${data.error}`;
-            if (data.success && window.llmAPIManager) {
+            let effectiveResult = data;
+            if (!effectiveResult.success && !effectiveResult.interim) {
+                const fallback = await tryEdgeFallbackForPanel(panel, effectiveResult.original_text || '');
+                if (fallback.success) {
+                    effectiveResult = { ...effectiveResult, ...fallback, success: true };
+                    showToast('Using Edge Translator fallback', 'info', 2500);
+                }
+            }
+
+            let translatedText = effectiveResult.success ? effectiveResult.translated_text : `⚠ ${effectiveResult.error}`;
+            if (effectiveResult.success && window.llmAPIManager) {
                 translatedText = window.llmAPIManager.postProcessTranslation(translatedText);
             }
 
@@ -1188,10 +1318,10 @@
                 !!data.interim,
                 'targetBubble',
                 panel,
-                !!data.interim && !!data.success
+                !!effectiveResult.interim && !!effectiveResult.success
             );
 
-            if (!data.interim) {
+            if (!effectiveResult.interim) {
                 if (state.sourceBubble) state.sourceBubble.classList.remove('live');
                 if (state.targetBubble) state.targetBubble.classList.remove('live');
                 state.sourceBubble = null;
@@ -1201,7 +1331,7 @@
                 state.lastSentText = '';
             }
 
-            if (typeof data.request_id === 'number' && data.request_id === state.inFlightRequestId) {
+            if (typeof effectiveResult.request_id === 'number' && effectiveResult.request_id === state.inFlightRequestId) {
                 state.isInFlight = false;
                 state.inFlightRequestId = 0;
 
@@ -1214,8 +1344,17 @@
             return;
         }
 
-        if (data.success) {
-            let translated = data.translated_text;
+        let effectiveResult = data;
+        if (!effectiveResult.success) {
+            const fallback = await tryEdgeFallbackForPanel(panel, effectiveResult.original_text || '');
+            if (fallback.success) {
+                effectiveResult = { ...effectiveResult, ...fallback, success: true };
+                showToast('Using Edge Translator fallback', 'info', 2500);
+            }
+        }
+
+        if (effectiveResult.success) {
+            let translated = effectiveResult.translated_text;
             if (window.llmAPIManager) {
                 translated = window.llmAPIManager.postProcessTranslation(translated);
             }
@@ -1233,13 +1372,13 @@
                         translated_text: translated,
                         source_language: srcLang,
                         target_language: tgtLang,
-                        engine: data.engine || 'libretranslate',
+                        engine: effectiveResult.engine || 'libretranslate',
                         panel: panel,
                     }),
                 }).catch(() => { });
             }
         } else {
-            addConvBubble(otherSide, `⚠ ${data.error}`, 'translated');
+            addConvBubble(otherSide, `⚠ ${effectiveResult.error}`, 'translated');
             
             // Save failed translation attempt for session history
             if (currentSessionId) {
@@ -1250,10 +1389,10 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         source_text: data.original_text || '',
-                        translated_text: `Error: ${data.error || 'Translation failed'}`,
+                        translated_text: `Error: ${effectiveResult.error || 'Translation failed'}`,
                         source_language: srcLang,
                         target_language: tgtLang,
-                        engine: data.engine || 'libretranslate',
+                        engine: effectiveResult.engine || 'libretranslate',
                         panel: panel,
                     }),
                 }).catch(() => { });
@@ -1797,6 +1936,7 @@
     // ========================================================================
 
     function initSettingsTab() {
+        renderOfflineModeSettings();
         renderApiPrioritySettings();
         renderProviderConfigList();
         renderSpeechSettings();
@@ -1829,6 +1969,58 @@
                 'success'
             );
         });
+    }
+
+    function renderOfflineModeSettings() {
+        const forceOfflineCheckbox = document.getElementById('forceOfflineMode');
+        if (!forceOfflineCheckbox) return;
+
+        forceOfflineCheckbox.checked = !!userSettings.force_offline;
+        syncOfflinePolicyNotice();
+
+        forceOfflineCheckbox.addEventListener('change', async () => {
+            const previous = !!userSettings.force_offline;
+            const next = !!forceOfflineCheckbox.checked;
+            const saved = await updateSetting('force_offline', next);
+
+            if (!saved) {
+                userSettings.force_offline = previous;
+                forceOfflineCheckbox.checked = previous;
+                showToast('Failed to update Force Offline mode', 'error');
+                return;
+            }
+
+            userSettings.force_offline = next;
+            showToast(
+                `Force Offline mode ${next ? 'enabled' : 'disabled'}`,
+                next ? 'warning' : 'success'
+            );
+
+            await checkStatuses();
+            syncOfflinePolicyNotice();
+        });
+    }
+
+    function syncOfflinePolicyNotice() {
+        const notice = document.getElementById('offlinePolicyNotice');
+        if (!notice) return;
+
+        const forced = !!(runtimeOfflineStatus.forceOffline || userSettings.force_offline);
+        const offline = !!runtimeOfflineStatus.offline;
+
+        notice.classList.remove('warning');
+        if (forced) {
+            notice.textContent = 'Force Offline is active: local services only. Edge fallback and cloud providers are disabled.';
+            notice.classList.add('warning');
+            return;
+        }
+
+        if (offline) {
+            notice.textContent = 'Server network is currently offline. Local services are active and fallback is limited.';
+            return;
+        }
+
+        notice.textContent = 'Local translation is the default. Edge Translator fallback is allowed when supported.';
     }
 
     function renderApiPrioritySettings() {
@@ -2385,6 +2577,8 @@
             socketConnected: !!socket?.connected,
             offlineKnown: false,
             offline: false,
+            forceOffline: false,
+            edgeFallbackAllowed: true,
             libreAvailable: false,
             whisperEnabled: false,
             whisperReachable: false,
@@ -2397,15 +2591,39 @@
             const indicator = document.getElementById('offlineIndicator');
             status.offlineKnown = true;
             status.offline = !!data.offline;
+            status.forceOffline = !!data.force_offline;
+            status.edgeFallbackAllowed = data.edge_fallback_allowed !== false;
+
+            runtimeOfflineStatus = {
+                known: true,
+                offline: status.offline,
+                forceOffline: status.forceOffline,
+                edgeFallbackAllowed: status.edgeFallbackAllowed,
+            };
+
             if (data.offline) {
                 indicator.style.display = 'inline-block';
-                indicator.title = 'Running in offline mode - Using Whisper STT and local services only';
+                indicator.textContent = status.forceOffline ? '📡 Offline (Forced)' : '📡 Offline';
+                indicator.classList.toggle('forced', status.forceOffline);
+                indicator.title = status.forceOffline
+                    ? 'Force Offline is active - local services only'
+                    : 'Running in offline mode - Using Whisper STT and local services only';
             } else {
                 indicator.style.display = 'none';
+                indicator.classList.remove('forced');
             }
+
+            syncOfflinePolicyNotice();
         } catch {
             // If we can't check, assume online
+            runtimeOfflineStatus = {
+                known: false,
+                offline: false,
+                forceOffline: !!userSettings.force_offline,
+                edgeFallbackAllowed: !userSettings.force_offline,
+            };
             document.getElementById('offlineIndicator').style.display = 'none';
+            syncOfflinePolicyNotice();
         }
 
         // LibreTranslate
