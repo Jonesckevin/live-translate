@@ -26,6 +26,7 @@
             this.offlineMode = false;
             this.offlineStatus = null;
             this._offlineCheckComplete = false;
+            this.speechMode = 'standard';
 
             this.webSpeechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
             this.synthesis = window.speechSynthesis || null;
@@ -52,10 +53,11 @@
 
         async _checkOfflineStatus() {
             try {
-                const response = await fetch('/api/offline-status');
+                const response = await fetch('/api/offline-readiness');
                 if (response.ok) {
                     this.offlineStatus = await response.json();
-                    this.offlineMode = this.offlineStatus.offline;
+                    this.offlineMode = !!this.offlineStatus.offline;
+                    this.speechMode = window.userSettings?.speech_mode || 'standard';
                     
                     // In offline mode, suggest Whisper if available (don't force change)
                     if (this.offlineMode && this.offlineStatus.whisper_available) {
@@ -80,6 +82,7 @@
                 this.whisperModel = window.userSettings.whisper_model || 'base';
                 this.voiceMode = window.userSettings.voice_mode || 'single';
                 this.playbackVoiceIds = window.userSettings.playback_voices || [];
+                this.speechMode = window.userSettings.speech_mode || 'standard';
             } else {
                 // Fallback to localStorage for migration
                 this.sttEngine = localStorage.getItem('lt_stt_engine') || 'web_speech_api';
@@ -87,6 +90,7 @@
                 this.sttModel = localStorage.getItem('lt_stt_model') || '';
                 this.whisperModel = localStorage.getItem('lt_whisper_model') || 'base';
                 this.voiceMode = localStorage.getItem('lt_voice_mode') || 'single';
+                this.speechMode = localStorage.getItem('lt_speech_mode') || 'standard';
                 try {
                     const raw = localStorage.getItem('lt_playback_voices');
                     this.playbackVoiceIds = raw ? JSON.parse(raw) : [];
@@ -596,8 +600,11 @@
                 webSpeechAPI: this.webSpeechSupported && !this.offlineMode,
                 tts: !!this.synthesis,
                 offline: this.offlineMode,
+                offlineReady: this.offlineStatus?.ready || false,
+                offlineReason: this.offlineStatus?.reason || '',
                 whisperAvailable: this.offlineStatus?.whisper_available || false,
                 recommendedEngine: this.offlineMode ? 'whisper' : 'web_speech_api',
+                speechMode: this.speechMode,
             };
         }
     }

@@ -29,6 +29,11 @@ DEFAULT_SETTINGS = {
     'whisper_model': os.environ.get('WHISPER_MODEL', 'base'),
     'voice_mode': 'single',
     'playback_voices': [],
+    'push_to_talk_left': '',
+    'push_to_talk_right': '',
+    'speech_mode': 'standard',
+    'offline_mode': 'auto',
+    'offline_strict': False,
 }
 
 
