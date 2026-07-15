@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 SESSION_DIR = os.environ.get('SESSION_DIR', '/data/sessions')
-SESSION_ICON_DIR = os.environ.get('SESSION_ICON_DIR', '/tmp/session-icons')
+SESSION_ICON_DIR = os.environ.get('SESSION_ICON_DIR', '/data/session-icons')
 RETENTION_DAYS = int(os.environ.get('SESSION_RETENTION_DAYS', '30'))
 _UNSET = object()
 

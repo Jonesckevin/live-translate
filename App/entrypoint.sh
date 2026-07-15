@@ -3,6 +3,17 @@ set -eu
 
 APP_USER="${APP_USER:-appuser}"
 
+# Generate SECRET_KEY and SECRETS if not provided
+if [ -z "${SECRET_KEY:-}" ]; then
+  export SECRET_KEY=$(openssl rand -hex 32)
+  echo "Generated random SECRET_KEY"
+fi
+
+if [ -z "${SECRETS:-}" ]; then
+  export SECRETS=$(openssl rand -hex 32)
+  echo "Generated random SECRETS"
+fi
+
 if [ "$(id -u)" = "0" ]; then
   mkdir -p /data/logs /data/sessions /data/glossaries /data/output /data/uploaded \
     /data/session-icons /data/cache/huggingface /data/.local 2>/dev/null || true

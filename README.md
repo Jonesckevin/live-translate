@@ -40,3 +40,39 @@ During image build, Whisper models `tiny`, `base`, `small`, `medium`, and `large
 Embedded LibreTranslate language package downloads are also persisted by mounting `./data/cache/libretranslate-local` to `/root/.local`, so Argos language models are reused across container rebuilds/restarts.
 
 Open **http://localhost:9015** in your browser.
+
+```bash
+docker run --name live-translate --restart unless-stopped -p 9015:5000 -v ./data:/data \
+	-e ALLOW_AUTH=true \
+	-e REQUIRE_AUTH=true \
+	-e SOCKETIO_CORS_CREDENTIALS=true \
+	-e ALLOW_USER_REGISTRATION=true \
+	-e ALLOW_GUEST_LOGIN=true \
+	-e WHISPER_ENABLED=true \
+	-e WHISPER_MODEL=tiny \
+	-e ENABLE_SERVER_ANALYTICS=false \
+	-e SECRET_KEY='$(openssl rand -hex 32)' \
+	-e SECRETS='$(openssl rand -hex 32)' \
+	-e REQUIRE_SECRETS=true \
+	-e LOGS_ACCESS_TOKEN= \
+	-e ALLOW_CLIENT_API_KEYS=true jonesckevin/live-translate:latest
+```
+
+Open **http://localhost:9015** in your browser.
+
+**Alternatively, build locally:**
+
+```bash
+git clone https://github.com/4n6post/live-translate.git
+cd live-translate
+docker build -t live-translate:latest .
+
+# Then run with your local image
+docker run -d \
+  --name live-translate \
+  -p 9015:5000 \
+  -v $(pwd)/data:/data \
+  -e REQUIRE_AUTH=false \
+  -e OFFLINE_MODE=auto \
+  live-translate:latest
+```

@@ -59,14 +59,20 @@ if CORS_ALLOW_ALL:
 elif CORS_ALLOWED_ORIGINS:
     CORS(app, resources={r"/api/*": {"origins": CORS_ALLOWED_ORIGINS}})
 
+SOCKETIO_PING_TIMEOUT = int(os.environ.get('SOCKETIO_PING_TIMEOUT', '60'))
+SOCKETIO_PING_INTERVAL = int(os.environ.get('SOCKETIO_PING_INTERVAL', '25'))
+SOCKETIO_ASYNC_HANDLERS = os.environ.get('SOCKETIO_ASYNC_HANDLERS', 'true').lower() == 'true'
+SOCKETIO_CORS_CREDENTIALS = os.environ.get('SOCKETIO_CORS_CREDENTIALS', 'true').lower() == 'true'
+
 socketio = SocketIO(
     app,
     cors_allowed_origins=_socketio_cors_origins,
     async_mode='eventlet',
-    ping_timeout=60,
-    ping_interval=25,
+    ping_timeout=SOCKETIO_PING_TIMEOUT,
+    ping_interval=SOCKETIO_PING_INTERVAL,
     logger=True,
-    engineio_logger=False
+    engineio_logger=False,
+    cors_credentials=SOCKETIO_CORS_CREDENTIALS
 )
 
 if os.environ.get('TRUST_PROXY', 'false').lower() == 'true':
@@ -92,13 +98,13 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.j
 LOG_DIR = os.environ.get('LOG_DIR', '/data/logs')
 
 ALLOW_CLIENT_API_KEYS = os.environ.get('ALLOW_CLIENT_API_KEYS', 'true').lower() == 'true'
-WHISPER_PRELOAD_ON_STARTUP = os.environ.get('WHISPER_PRELOAD_ON_STARTUP', 'false').lower() == 'true'
+WHISPER_PRELOAD_ON_STARTUP = os.environ.get('WHISPER_PRELOAD_ON_STARTUP', 'true').lower() == 'true'
 STARTUP_FAIL_ON_CHECKS = os.environ.get('STARTUP_FAIL_ON_CHECKS', 'false').lower() == 'true'
-REQUIRE_SECRETS = os.environ.get('REQUIRE_SECRETS', 'false').lower() == 'true'
+REQUIRE_SECRETS = os.environ.get('REQUIRE_SECRETS', 'true').lower() == 'true'
 IS_PRODUCTION = (os.environ.get('FLASK_ENV', '') or os.environ.get('APP_ENV', '')).lower() == 'production'
-ALLOW_AUTH = os.environ.get('ALLOW_AUTH', 'false').lower() == 'true'
-ALLOW_USER_REGISTRATION = os.environ.get('ALLOW_USER_REGISTRATION', 'false').lower() == 'true'
-REQUIRE_AUTH = ALLOW_AUTH and (os.environ.get('REQUIRE_AUTH', 'false').lower() == 'true')
+ALLOW_AUTH = os.environ.get('ALLOW_AUTH', 'true').lower() == 'true'
+ALLOW_USER_REGISTRATION = os.environ.get('ALLOW_USER_REGISTRATION', 'true').lower() == 'true'
+REQUIRE_AUTH = ALLOW_AUTH and (os.environ.get('REQUIRE_AUTH', 'true').lower() == 'true')
 ALLOW_GUEST_LOGIN = ALLOW_AUTH and (os.environ.get('ALLOW_GUEST_LOGIN', 'true').lower() == 'true')
 SHARE_CODE_TTL = int(os.environ.get('SHARE_CODE_TTL', str(24 * 3600)))
 GOOGLE_ANALYTICS_KEY = os.environ.get('GOOGLE_ANALYTICS_KEY', '').strip()

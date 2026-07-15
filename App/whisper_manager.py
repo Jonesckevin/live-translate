@@ -9,8 +9,8 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
-WHISPER_ENABLED = os.environ.get('WHISPER_ENABLED', 'false').lower() == 'true'
-WHISPER_MODEL = os.environ.get('WHISPER_MODEL', 'base')
+WHISPER_ENABLED = os.environ.get('WHISPER_ENABLED', 'true').lower() == 'true'
+WHISPER_MODEL = os.environ.get('WHISPER_MODEL', 'tiny')
 WHISPER_USE_GPU = os.environ.get('WHISPER_USE_GPU', 'false').lower() == 'true'
 WHISPER_MODEL_DIR = os.environ.get('WHISPER_MODEL_DIR', '/data/whisper-model')
 
