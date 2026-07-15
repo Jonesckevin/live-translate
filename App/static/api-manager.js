@@ -1,8 +1,4 @@
-/**
- * LLM API Manager - Client-side LLM provider management.
- * Handles API key storage, error categorization, and translation post-processing.
- * Ported from OCR-WebApp with translation focus.
- */
+
 (function () {
     'use strict';
 
@@ -27,12 +23,12 @@
         }
 
         _loadFromSettings() {
-            // Load from userSettings if available (set by app.js)
+            
             if (window.userSettings) {
                 this.apiKeys = window.userSettings.api_keys || {};
                 this.apiKeyPriority = window.userSettings.api_key_priority || 'client';
             } else {
-                // Fallback to localStorage for migration
+                
                 try {
                     this.apiKeys = JSON.parse(localStorage.getItem('lt_api_keys') || '{}');
                 } catch { this.apiKeys = {}; }

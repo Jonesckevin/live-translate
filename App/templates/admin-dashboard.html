@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live Translate — Admin</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/admin-dashboard.css" />
+</head>
+<body class="admin-body">
+  <header class="admin-topbar">
+    <div class="admin-brand">
+      <span class="admin-logo">LT</span>
+      <span>Live Translate — Admin</span>
+    </div>
+    <div class="admin-topbar-right" id="topbarRight" style="display:none;">
+      <span class="admin-user">&#128100; <b id="whoami"></b></span>
+      <a class="btn-secondary" href="/">&larr; Back to app</a>
+      <button class="btn-danger" id="logoutBtn" type="button">Log out</button>
+    </div>
+  </header>
+
+  <div id="msg" class="admin-msg"></div>
+
+  <main class="admin-main">
+    
+    <div id="login" class="admin-card admin-login hidden">
+      <h2>Admin sign in</h2>
+      <p class="admin-muted">You must be an administrator to view this page.</p>
+      <div class="admin-login-form">
+        <input id="username" class="auth-input" placeholder="Username" autocomplete="username" />
+        <input id="password" class="auth-input" type="password" placeholder="Password" autocomplete="current-password" />
+        <button class="btn-primary" id="loginBtn" type="button">Sign in</button>
+      </div>
+    </div>
+
+    <div id="panel" class="hidden">
+      
+      <section class="admin-card">
+        <h2>Overview</h2>
+        <div id="stats" class="admin-stats"></div>
+      </section>
+
+      
+      <section class="admin-card">
+        <h2>Server settings</h2>
+        <div id="settings" class="admin-settings-grid"></div>
+        <button class="btn-primary" id="saveSettings" type="button">Save settings</button>
+      </section>
+
+      
+      <section class="admin-card">
+        <h2>Users</h2>
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="users"></tbody>
+          </table>
+        </div>
+      </section>
+
+      
+      <section class="admin-card">
+        <h2>Sessions</h2>
+        <div class="admin-sessions-layout" id="sessionsLayout">
+          
+          <div class="admin-table-wrap">
+            <table class="admin-table">
+              <thead>
+                <tr>
+                  <th>Icon</th><th>Title</th><th>Owner</th>
+                  <th>Visibility</th><th>Msgs</th><th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="sessions"></tbody>
+            </table>
+          </div>
+          
+          <aside class="session-detail hidden" id="sessionDetail">
+            <div class="session-detail-header">
+              <h3 id="sdTitle">Session</h3>
+              <button class="icon-btn" id="closeDetail" type="button" title="Close">✕</button>
+            </div>
+            
+            <div class="sd-section">
+              <label class="sd-label">Icon</label>
+              <div class="sd-icon-wrap">
+                <img id="sdIconPreview" class="sd-icon-img" alt="Session icon" />
+                <div class="sd-icon-buttons">
+                  <label class="btn-secondary sd-upload-label">
+                    Upload image
+                    <input id="sdIconFile" type="file" accept=".png,.jpg,.jpeg,.gif" style="display:none;" />
+                  </label>
+                  <button class="btn-danger" id="sdIconDelete" type="button">Remove icon</button>
+                </div>
+              </div>
+            </div>
+            
+            <div class="sd-section">
+              <label class="sd-label" for="sdTitleInput">Title</label>
+              <div class="sd-row">
+                <input id="sdTitleInput" class="auth-input sd-input" type="text" />
+                <button class="btn-primary" id="sdSaveTitle" type="button">Save</button>
+              </div>
+            </div>
+            
+            <div class="sd-section">
+              <label class="sd-label" for="sdVisibility">Visibility</label>
+              <div class="sd-row">
+                <select id="sdVisibility" class="auth-input sd-input">
+                  <option value="private">Private</option>
+                  <option value="shared">Shared</option>
+                  <option value="public">Public</option>
+                </select>
+                <button class="btn-primary" id="sdSaveVisibility" type="button">Save</button>
+              </div>
+            </div>
+            
+            <div class="sd-section">
+              <label class="sd-label">Owner</label>
+              <div class="sd-current-owner">
+                <span id="sdOwnerDisplay"></span>
+              </div>
+              <label class="sd-label" style="margin-top:8px;">Reassign owner</label>
+              <div class="sd-row">
+                <select id="sdOwnerSelect" class="auth-input sd-input">
+                  <option value="">(no owner — anonymous)</option>
+                </select>
+                <button class="btn-primary" id="sdSaveOwner" type="button">Reassign</button>
+              </div>
+            </div>
+            
+            <div class="sd-section sd-meta">
+              <div><span class="sd-label">ID</span><span id="sdId" class="sd-mono"></span></div>
+              <div><span class="sd-label">Messages</span><span id="sdMsgCount"></span></div>
+              <div><span class="sd-label">Created</span><span id="sdCreated"></span></div>
+              <div><span class="sd-label">Updated</span><span id="sdUpdated"></span></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/static/admin-dashboard.js"></script>
+</body>
+</html>

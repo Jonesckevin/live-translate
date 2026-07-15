@@ -20,13 +20,11 @@ _whisper_runtime_device = None
 _whisper_runtime_compute_type = None
 _whisper_gpu_fallback_used = False
 
-
 def _is_cuda_runtime_error(error):
     message = str(error).lower()
     cuda_tokens = ('cuda', 'cublas', 'cudnn', 'ctranslate2')
     failure_tokens = ('driver', 'runtime version', 'insufficient', 'initialization', 'failed')
     return any(token in message for token in cuda_tokens) and any(token in message for token in failure_tokens)
-
 
 def _load_model_instance(WhisperModel, model_name, device, compute_type):
     logger.info(f"Loading Whisper model: {model_name} ({device} mode, {compute_type}) from {WHISPER_MODEL_DIR}")
@@ -38,7 +36,6 @@ def _load_model_instance(WhisperModel, model_name, device, compute_type):
     )
     logger.info(f"Whisper model loaded successfully ({device}, {compute_type})")
     return model
-
 
 def get_whisper_model(force_cpu=False, force_reload=False, model_name=None):
     """Lazy-load the Whisper model."""
@@ -90,7 +87,6 @@ def get_whisper_model(force_cpu=False, force_reload=False, model_name=None):
             logger.error(f"Failed to load Whisper model: {e}")
             raise
     return _whisper_model
-
 
 def transcribe(audio_data, language=None, model_name=None):
     """
@@ -158,7 +154,6 @@ def transcribe(audio_data, language=None, model_name=None):
         logger.exception(f"Whisper transcription failed: {e}")
         return {'success': False, 'error': str(e)}
 
-
 def get_status():
     """Get Whisper availability status."""
     status = {
@@ -173,7 +168,7 @@ def get_status():
     }
     if WHISPER_ENABLED:
         try:
-            from faster_whisper import WhisperModel  # noqa: F401
+            from faster_whisper import WhisperModel
             status['installed'] = True
         except ImportError:
             status['installed'] = False

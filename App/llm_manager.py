@@ -9,10 +9,8 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# Default host URLs (Docker-aware)
 OLLAMA_HOST = os.environ.get('OLLAMA_HOST', 'http://host.docker.internal:11434')
 LMSTUDIO_HOST = os.environ.get('LMSTUDIO_HOST', 'http://host.docker.internal:1234')
-
 
 class LLMManager:
     """Unified LLM client supporting multiple providers."""
@@ -143,6 +141,7 @@ class LLMManager:
     def test_connection(provider, api_key=None, custom_config=None):
         try:
             base_url = LLMManager.get_base_url(provider, custom_config)
+            prov_config = LLMManager.PROVIDER_CONFIGS.get(provider, {})
             headers = {'Content-Type': 'application/json', 'User-Agent': 'Live-Translate/1.0'}
             if api_key:
                 headers['Authorization'] = f'Bearer {api_key}'
@@ -156,8 +155,22 @@ class LLMManager:
                 headers['x-api-key'] = api_key or ''
                 headers['anthropic-version'] = '2023-06-01'
                 headers.pop('Authorization', None)
+            elif 'models_endpoint' in prov_config:
+                endpoint = f"{base_url}{prov_config['models_endpoint']}"
             else:
-                endpoint = f"{base_url}/models"
+                endpoint = f"{base_url}{prov_config.get('chat_endpoint', '/chat/completions')}"
+                test_payload = {
+                    'model': 'test-model',
+                    'messages': [{'role': 'user', 'content': 'test'}],
+                    'max_tokens': 1
+                }
+                response = requests.post(endpoint, json=test_payload, headers=headers, timeout=5)
+                return {
+                    'connected': response.status_code < 500,
+                    'status_code': response.status_code,
+                    'url': endpoint,
+                    'error': None if response.status_code < 500 else f"HTTP {response.status_code}"
+                }
 
             response = requests.get(endpoint, headers=headers, timeout=5)
             return {
@@ -360,7 +373,6 @@ class LLMManager:
                     content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
                     return {'success': True, 'content': content}
 
-            # Handle errors
             error_msg = f"HTTP {response.status_code}"
             try:
                 error_data = response.json()
@@ -497,7 +509,6 @@ class LLMManager:
 
     @staticmethod
     def translate(text, target_language, provider, model, api_key=None, custom_config=None, ai_auto_correct=True):
-        # Build instructions list conditionally
         instructions = [
             "1. **Preserve Structure:** Maintain all original formatting, line breaks, paragraphs, and spacing",
         ]

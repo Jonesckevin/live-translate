@@ -7,6 +7,7 @@ import os
 import logging
 import socket
 import time
+import json
 
 import requests
 
@@ -14,13 +15,11 @@ from llm_manager import LLMManager
 
 logger = logging.getLogger(__name__)
 
-
 def _env_true(name, default=False):
     raw = os.environ.get(name)
     if raw is None:
         return default
     return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
-
 
 LIBRETRANSLATE_LOCAL_ENABLED = _env_true('LIBRETRANSLATE_LOCAL_ENABLED', True)
 LIBRETRANSLATE_LOCAL_URL = os.environ.get('LIBRETRANSLATE_LOCAL_URL', 'http://127.0.0.1:5001')
@@ -36,6 +35,60 @@ logger.info(
     LIBRETRANSLATE_LOCAL_ENABLED,
 )
 
+def _get_language_name(language_code):
+    """Convert language code to full language name for LLM context."""
+    # Map common language codes to names
+    code_to_name = {
+        'en': 'English',
+        'uk': 'Ukrainian',
+        'ru': 'Russian',
+        'fr': 'French',
+        'de': 'German',
+        'es': 'Spanish',
+        'it': 'Italian',
+        'pt': 'Portuguese',
+        'zh': 'Chinese (Simplified)',
+        'ja': 'Japanese',
+        'ko': 'Korean',
+        'ar': 'Arabic',
+        'hi': 'Hindi',
+        'th': 'Thai',
+        'vi': 'Vietnamese',
+        'tr': 'Turkish',
+        'pl': 'Polish',
+        'nl': 'Dutch',
+        'sv': 'Swedish',
+        'da': 'Danish',
+        'fi': 'Finnish',
+        'no': 'Norwegian',
+        'el': 'Greek',
+        'cs': 'Czech',
+        'ro': 'Romanian',
+        'hu': 'Hungarian',
+        'he': 'Hebrew',
+        'id': 'Indonesian',
+        'ms': 'Malay',
+        'fil': 'Filipino',
+        'fa': 'Persian',
+        'ur': 'Urdu',
+        'bn': 'Bengali',
+        'ta': 'Tamil',
+        'te': 'Telugu',
+        'sw': 'Swahili',
+    }
+    
+    # Try to load from config as fallback
+    if language_code not in code_to_name:
+        try:
+            with open('config.json', 'r') as f:
+                config_data = json.load(f)
+                for lang in config_data.get('translation', {}).get('available_languages', []):
+                    if lang.get('code') == language_code:
+                        return lang.get('name', language_code)
+        except Exception as e:
+            logger.debug(f"Could not load language name from config: {e}")
+    
+    return code_to_name.get(language_code, language_code)
 
 class TranslationManager:
     """Unified translation interface supporting LibreTranslate and LLM providers."""
@@ -82,7 +135,8 @@ class TranslationManager:
     @staticmethod
     def translate_llm(text, source_lang, target_lang, provider, model, api_key=None, custom_config=None, ai_auto_correct=True):
         """Translate using an LLM provider."""
-        lang_label = target_lang
+        # Convert language code to full language name for LLM
+        lang_label = _get_language_name(target_lang)
         result = LLMManager.translate(text, lang_label, provider, model, api_key, custom_config, ai_auto_correct)
         if result.get('success'):
             return {
@@ -102,7 +156,6 @@ class TranslationManager:
         glossary: dict of {source_term: target_term} for pre/post processing
         ai_auto_correct: whether to enable AI spelling/typo correction (LLM only)
         """
-        # Pre-process: apply glossary substitutions
         processed_text = text
         placeholders = {}
         if glossary:
@@ -112,7 +165,6 @@ class TranslationManager:
                     processed_text = processed_text.replace(src_term, placeholder)
                     placeholders[placeholder] = tgt_term
 
-        # Route to engine
         if engine == 'libretranslate':
             logger.debug(f"Using LibreTranslate engine: {LIBRETRANSLATE_HOST}")
             result = TranslationManager.translate_libre(processed_text, source_lang, target_lang, timeout)
@@ -128,7 +180,6 @@ class TranslationManager:
             logger.error(f"Unknown engine: {engine}")
             return {'success': False, 'error': f'Unknown engine: {engine}'}
 
-        # Post-process: restore glossary terms
         if result.get('success') and placeholders:
             translated = result['translated_text']
             for placeholder, tgt_term in placeholders.items():
@@ -192,22 +243,17 @@ class TranslationManager:
             except Exception as e:
                 last_error = str(e)
             
-            # Quick retry backoff only if not last attempt
             if attempt < retries - 1:
                 time.sleep(retry_delay)
         
-        # In local mode, report as "available" even if warming up
-        # Translations will work via LLM fallback while models load
         is_local = LIBRETRANSLATE_LOCAL_ENABLED
         if is_local and last_error != 'Not reachable':
-            # Service responded with an error (e.g., 500) but is listening
             return {
                 'available': True,
                 'warming_up': True,
                 'url': LIBRETRANSLATE_HOST,
             }
         
-        # Try to ping the port directly in local mode
         if is_local:
             try:
                 host, port = LIBRETRANSLATE_LOCAL_URL.split('://')[-1].split(':')
@@ -216,7 +262,6 @@ class TranslationManager:
                 result = sock.connect_ex((host, int(port)))
                 sock.close()
                 if result == 0:
-                    # Port is open - service is running even if not responding to /languages
                     return {
                         'available': True,
                         'warming_up': True,

@@ -1,7 +1,4 @@
-/**
- * Speech Manager - Handles speech-to-text (STT) and text-to-speech (TTS).
- * Supports Web Speech API (browser) and Whisper (server-side) for STT.
- */
+
 (function () {
     'use strict';
 
@@ -39,7 +36,7 @@
             
             this._loadFromSettings();
             
-            // Start offline check asynchronously but don't block constructor
+            
             this._checkOfflineStatus().catch(e => {
                 this._offlineCheckComplete = true;
             });
@@ -53,22 +50,17 @@
 
         async _checkOfflineStatus() {
             try {
-                const response = await fetch('/api/offline-readiness');
+                const response = await fetch('/api/offline-status');
                 if (response.ok) {
                     this.offlineStatus = await response.json();
                     this.offlineMode = !!this.offlineStatus.offline;
                     this.speechMode = window.userSettings?.speech_mode || 'standard';
                     
-                    // In offline mode, suggest Whisper if available (don't force change)
-                    if (this.offlineMode && this.offlineStatus.whisper_available) {
-                        if (this.sttEngine === 'web_speech_api') {
-                            console.warn('[SpeechManager] Offline mode - Whisper recommended (Web Speech API requires internet)');
-                        }
-                    }
+                    
                 } else {
                 }
             } catch (e) {
-                // Silent fail - offline check is optional
+                
             } finally {
                 this._offlineCheckComplete = true;
             }
@@ -84,7 +76,7 @@
                 this.playbackVoiceIds = window.userSettings.playback_voices || [];
                 this.speechMode = window.userSettings.speech_mode || 'standard';
             } else {
-                // Fallback to localStorage for migration
+                
                 this.sttEngine = localStorage.getItem('lt_stt_engine') || 'web_speech_api';
                 this.sttProvider = localStorage.getItem('lt_stt_provider') || 'groq';
                 this.sttModel = localStorage.getItem('lt_stt_model') || '';
@@ -172,14 +164,14 @@
             }));
         }
 
-        // Set the preferred microphone device ID (from enumerateDevices).
-        // An empty string means "use the browser default".
+        
+        
         setDeviceId(deviceId) {
             const nextDeviceId = deviceId || '';
             if (this._deviceId === nextDeviceId) return;
             this._deviceId = nextDeviceId;
 
-            // If the target device changed, force a fresh priming stream next start.
+            
             if (this._primingStream && this._primingDeviceId !== nextDeviceId) {
                 this._releasePrimingStream();
             }
@@ -199,7 +191,7 @@
                 this.stop();
             }
             
-            // Save to settings
+            
             if (window.updateSetting) {
                 await window.updateSetting('stt_engine', this.sttEngine);
             }
@@ -232,7 +224,7 @@
             }
         }
 
-        // ---- Web Speech API ----
+        
 
         _startWebSpeech(language) {
             if (!this.webSpeechSupported) {
@@ -240,7 +232,7 @@
                 return;
             }
 
-            // Prevent multiple simultaneous recognition instances
+            
             if (this.recognition && this.isListening && !this._isAutoRestarting) {
                 this._stopWebSpeech();
             }
@@ -254,9 +246,9 @@
                 this._webSpeechRestartTimer = null;
             }
 
-            // If a specific device is requested, open a silent getUserMedia stream
-            // with that deviceId first.  Chrome honours the most-recently-opened
-            // audio device constraint and will route SpeechRecognition to it.
+            
+            
+            
             const primeAndStart = () => {
                 try {
                     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -286,7 +278,7 @@
                     this._primingDeviceId = this._deviceId;
                     primeAndStart();
                 }).catch(err => {
-                    // Fall back to default device if the chosen one fails.
+                    
                     primeAndStart();
                 });
             } else {
@@ -297,7 +289,7 @@
         _attachRecognitionHandlers() {
             this.recognition.onstart = () => {
                 this.isListening = true;
-                // Only emit state change if not auto-restarting (prevents flicker)
+                
                 if (!this._isAutoRestarting) {
                     this._emitStateChange('listening');
                 }
@@ -305,7 +297,7 @@
             };
 
             this.recognition.onresult = (event) => {
-                // Reset network retry counter on successful recognition
+                
                 this._networkRetryCount = 0;
                 
                 let interim = '';
@@ -326,7 +318,7 @@
 
             this.recognition.onerror = (event) => {
                 if (event.error === 'no-speech') {
-                    // No speech detected - this is normal, just continue listening
+                    
                     return;
                 }
 
@@ -338,8 +330,8 @@
                 }
 
                 if (event.error === 'network') {
-                    // Transient Google speech service blip — silent exponential backoff.
-                    // Only surface an error to the UI after 3 consecutive failures.
+                    
+                    
                     this._networkRetryCount = (this._networkRetryCount || 0) + 1;
                     const count = this._networkRetryCount;
                     const backoffMs = count <= 3 ? 2000 : Math.min(count * 3000, 20000);
@@ -347,7 +339,7 @@
                     if (count >= 3) {
                         this._emitError('Speech recognition is having trouble reaching the network. Retrying\u2026');
                     }
-                    // Keep auto-restart enabled and schedule retry
+                    
                     this._isAutoRestarting = true;
                     this._webSpeechRestartTimer = setTimeout(() => {
                         if (!this._manualStop && this.sttEngine === 'web_speech_api') {
@@ -358,8 +350,8 @@
                 }
 
                 if (event.error === 'aborted') {
-                    // \"aborted\" means another recognition session started — this is expected
-                    // when switching between conversation sides. Don't restart or show error.
+                    
+                    
                     this._restartWebSpeech = false;
                     this._isAutoRestarting = false;
                     return;
@@ -376,17 +368,17 @@
             };
 
             this.recognition.onend = () => {
-                // Check if this is an automatic restart or manual stop
+                
                 const isAutoRestart = !this._manualStop && this._restartWebSpeech && this.sttEngine === 'web_speech_api';
                 
                 if (isAutoRestart) {
-                    // Keep listening state active during auto-restart (prevents flicker)
+                    
                     this._isAutoRestarting = true;
                     this._webSpeechRestartTimer = setTimeout(() => {
                         this._startWebSpeech(this._webSpeechLanguage);
-                    }, 100); // Reduced delay for faster restart
+                    }, 100); 
                 } else {
-                    // Actually stopped
+                    
                     this.isListening = false;
                     this._emitStateChange('stopped');
                 }
@@ -409,7 +401,7 @@
             this._releasePrimingStream();
         }
 
-        // ---- Whisper (server-side) ----
+        
 
         async _startWhisperRecording(language) {
             try {
@@ -522,7 +514,7 @@
             this._emitStateChange('stopped');
         }
 
-        // ---- TTS ----
+        
 
         speak(text, language = 'en') {
             if (!this.synthesis) return;
@@ -573,7 +565,7 @@
             if (this.synthesis) this.synthesis.cancel();
         }
 
-        // ---- Helpers ----
+        
 
         _mapLanguageCode(code) {
             const map = {

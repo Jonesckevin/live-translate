@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-lt-require-auth="{{ 'true' if require_auth else 'false' }}"{% if join_code %} data-lt-join-code="{{ join_code | e }}"{% endif %}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,9 +7,19 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' style='stop-color:%23a855f7'/><stop offset='100%25' style='stop-color:%23c084fc'/></linearGradient></defs><rect width='100' height='100' rx='20' fill='%231a1a24'/><text x='50' y='70' font-family='Arial,sans-serif' font-size='55' font-weight='bold' text-anchor='middle' fill='url(%23g)'>LT</text></svg>">
     <link rel="stylesheet" href="/static/style.css">
     <script src="/static/socket.io.min.js"></script>
+    {% if ga_key %}
+    
+    <script nonce="{{ csp_nonce }}" src="https://www.googletagmanager.com/gtag/js?id={{ ga_key }}"></script>
+    <script nonce="{{ csp_nonce }}">
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', '{{ ga_key }}', { anonymize_ip: true });
+    </script>
+    {% endif %}
 </head>
 <body>
-    <!-- Header -->
+    
     <header class="app-header">
         <div class="header-left">
             <h1 class="app-title">
@@ -33,9 +43,10 @@
         </div>
         <div class="header-right">
             <label class="header-toggle">
-                <input type="checkbox" id="aiAutoCorrectHeader" />
+                <input type="checkbox" id="aiAutoCorrectHeader" title="Only works when LLMs are connected and selected in the options" />
                 <span class="toggle-label">✨ Auto-Correct</span>
             </label>
+            <div id="authHeader" class="auth-header" style="display:none;"></div>
             <button class="btn-secondary" id="openSettingsModal">⚙️ Settings</button>
         </div>
     </header>
@@ -47,9 +58,9 @@
 
     <main class="app-main">
 
-        <!-- ============================================================ -->
-        <!-- Conversation Section -->
-        <!-- ============================================================ -->
+        
+        
+        
         <section class="merged-section" id="conversationSection">
             <div class="section-title-inline section-title-centered">
                 <h2 id="conversationSessionTitle">No session selected</h2>
@@ -67,7 +78,7 @@
             </div>
 
             <div class="conversation-panels">
-                <!-- Left Panel (Speaker A) -->
+                
                 <div class="conv-panel" id="convPanelLeft">
                     <div class="conv-mic-device-row">
                         <label class="conv-mic-device-label">🎤 Microphone</label>
@@ -88,7 +99,7 @@
                     </div>
                 </div>
 
-                <!-- Right Panel (Speaker B) -->
+                
                 <div class="conv-panel" id="convPanelRight">
                     <div class="conv-mic-device-row">
                         <label class="conv-mic-device-label">🎤 Microphone</label>
@@ -112,7 +123,7 @@
         </section>
     </main>
 
-    <!-- Sessions Modal -->
+    
     <div class="app-modal" id="sessionsModal" aria-hidden="true">
         <div class="app-modal-dialog">
             <div class="app-modal-header">
@@ -150,13 +161,38 @@
                         <button class="btn-danger" id="deleteSession">Delete</button>
                     </div>
                 </div>
+                
+                <div class="session-vis-panel" id="sessionVisPanel" style="display:none;">
+                    <div class="session-vis-row">
+                        <label class="session-vis-label">Visibility</label>
+                        <select id="sessionVisSelect" class="session-vis-select">
+                            <option value="private">🔒 Private (only you)</option>
+                            <option value="shared">🔗 Shared (link only)</option>
+                            <option value="public">🌍 Public (anyone)</option>
+                        </select>
+                    </div>
+                    <div class="session-pass-row" id="sessionPassRow" style="display:none;">
+                        <label class="session-vis-label session-pass-toggle">
+                            <input type="checkbox" id="sessionPassEnabled" />
+                            Require a join password
+                        </label>
+                        <input type="password" id="sessionPassInput" class="session-pass-input auth-input"
+                               placeholder="Set join password (leave blank to keep existing)…"
+                               autocomplete="new-password" style="display:none;" />
+                    </div>
+                    <div class="session-vis-actions">
+                        <button class="btn-primary" id="sessionVisSave" type="button">Save access settings</button>
+                        <button class="btn-secondary" id="sessionShareBtn" type="button">📋 Copy share code</button>
+                    </div>
+                    <div class="session-vis-feedback" id="sessionVisFeedback"></div>
+                </div>
                 <div class="session-messages" id="sessionMessages"></div>
             </div>
             </div>
         </div>
     </div>
 
-    <!-- Settings Modal -->
+    
     <div class="app-modal" id="settingsModal" aria-hidden="true">
         <div class="app-modal-dialog modal-settings">
             <div class="app-modal-header">
@@ -168,7 +204,7 @@
             </div>
             <div class="app-modal-body">
             <div class="settings-grid">
-                <!-- Reset Settings Button -->
+                
                 <div class="settings-reset-row">
                     <button class="btn-danger" id="resetSettingsBtn">
                         🔄 Reset All Settings to Defaults
@@ -176,7 +212,7 @@
                     <span class="settings-reset-info">This will reset all your preferences, API keys, and voice settings.</span>
                 </div>
 
-                <!-- Translation Settings -->
+                
                 <div class="settings-card">
                     <div class="section-title-inline section-title-card">
                         <h3>Translation</h3>
@@ -205,7 +241,7 @@
                     </div>
                 </div>
 
-                <!-- LLM Provider Settings - Full Width -->
+                
                 <div class="settings-card settings-card-full">
                     <div class="section-title-inline section-title-card">
                         <h3>AI / LLM Providers &amp; API Keys</h3>
@@ -219,10 +255,14 @@
                             <option value="server">Server API key first</option>
                         </select>
                     </div>
+                    <div class="settings-storage-info" id="storageInfo">
+                        <span id="storageLocation">Storage: Loading...</span>
+                        <button class="help-icon-btn" id="storageInfoBtn" title="Where are API keys stored?" aria-label="Storage location help">?</button>
+                    </div>
                     <div class="provider-config-list" id="providerConfigList"></div>
                 </div>
 
-                <!-- Speech Settings -->
+                
                 <div class="settings-card">
                     <div class="section-title-inline section-title-card">
                         <h3>Speech Settings</h3>
@@ -277,7 +317,7 @@
                     </div>
                 </div>
 
-                <!-- Glossary Management -->
+                
                 <div class="settings-card">
                     <div class="section-title-inline section-title-card">
                         <h3>Glossaries</h3>
@@ -286,7 +326,7 @@
                     <p class="settings-desc">Glossaries let you force preferred terminology so translations stay consistent across messages and sessions.</p>
                     <p class="settings-help-inline">How to use: choose a file and click Import. Each upload replaces the current glossary with a single saved glossary named Glossary.</p>
                     
-                    <!-- Import Section -->
+                    
                     <div class="glossary-import-compact">
                         <div class="glossary-import-fields">
                             <input id="glossarySourceLang" type="text" placeholder="From (auto from conversation if blank)" class="glossary-input" />
@@ -305,7 +345,7 @@
                         <p class="glossary-format-hint">Supported: JSON, CSV, TSV, TXT. CSV/TSV need source and target columns. Import overwrites the current Glossary. Press Enter in any field or click Import.</p>
                     </div>
                     
-                    <!-- Glossary List -->
+                    
                     <div class="glossary-list" id="glossaryList"></div>
                 </div>
             </div>
@@ -313,7 +353,7 @@
         </div>
     </div>
 
-    <!-- Help Modal -->
+    
     <div class="app-modal" id="helpModal" aria-hidden="true">
         <div class="app-modal-dialog">
             <div class="app-modal-header">
@@ -326,7 +366,7 @@
         </div>
     </div>
 
-    <!-- Virtual Keyboard Overlay -->
+    
     <div class="keyboard-overlay" id="keyboardOverlay" style="display:none;">
         <div class="keyboard-container">
             <div class="keyboard-header">
@@ -337,7 +377,7 @@
         </div>
     </div>
 
-    <!-- Toast Notifications -->
+    
     <div class="toast-container" id="toastContainer"></div>
 
     <footer class="app-footer">
@@ -351,6 +391,9 @@
         </div>
         <div class="footer-center">Live Translate</div>
         <div class="footer-right">
+            <a class="footer-github-link" href="/docs" aria-label="Documentation and legal">
+                <span>Docs &amp; Legal</span>
+            </a>
             <a class="footer-github-link" href="https://github.com/jonesckevin/live-translate" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository">
                 <svg class="github-logo" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                     <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49C4 14.09 3.48 13.23 3.32 12.78c-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.63 7.63 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .22.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" fill="currentColor"></path>
@@ -360,10 +403,11 @@
         </div>
     </footer>
 
-    <!-- Scripts -->
+    
     <script src="/static/api-manager.js"></script>
     <script src="/static/speech-manager.js"></script>
     <script src="/static/keyboard-manager.js"></script>
     <script src="/static/app.js"></script>
+    <script src="/static/auth-widget.js"></script>
 </body>
 </html>

@@ -1,52 +1,41 @@
-ARG PYTHON_BASE=python:3.11-slim
-FROM ${PYTHON_BASE}
-
-WORKDIR /app
-
-# Install system dependencies
+ARG PYTHON_BASE=python:3.12-slim
+FROM ${PYTHON_BASE} AS builder
+WORKDIR /tmp/build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
 COPY App/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install LibreTranslate in an isolated venv to avoid Flask version conflicts
+COPY App/requirements-auth.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --prefix /install -r requirements.txt && \
+    pip install --no-cache-dir --prefix /install -r requirements-auth.txt
 RUN python -m venv /opt/libretranslate-venv \
     && /opt/libretranslate-venv/bin/pip install --no-cache-dir libretranslate==1.9.6
-
-# Patch LibreTranslate's IndexError bug where languages list is empty  
 RUN LIBRE_SITE_PACKAGES=$(/opt/libretranslate-venv/bin/python -c "import site; print(site.getsitepackages()[0])") \
     && sed -i "s/language_target_fallback = languages\[1\] if len(languages) >= 2 else languages\[0\]/language_target_fallback = languages[1] if len(languages) >= 2 else (languages[0] if len(languages) >= 1 else 'en')/g" \
     "$LIBRE_SITE_PACKAGES/libretranslate/app.py"
-
-# Pre-download all Whisper models into an image seed directory.
-# On first container start, entrypoint copies these into /data/whisper-model.
-ENV WHISPER_MODEL_SEED_DIR=/opt/whisper-model-seed
-ENV WHISPER_MODEL_DIR=/data/whisper-model
-RUN python -c "\
-from faster_whisper import WhisperModel; \
-import os; \
-os.makedirs('${WHISPER_MODEL_SEED_DIR}', exist_ok=True); \
-models = ['tiny', 'base', 'small', 'medium', 'large-v3']; \
-[print(f'Downloading whisper model: {m}') or WhisperModel(m, device='cpu', compute_type='int8', download_root='${WHISPER_MODEL_SEED_DIR}') for m in models]; \
-print('All Whisper models downloaded successfully')"
-
-# Copy application code
+FROM ${PYTHON_BASE}
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /install /usr/local
+COPY --from=builder /opt/libretranslate-venv /opt/libretranslate-venv
 COPY App/ .
-
-# Create data directories
-RUN mkdir -p /data/sessions /data/glossaries /data/logs /data/output /data/uploaded /data/whisper-model
-
+RUN groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/appuser appuser \
+    && mkdir -p /data/sessions /data/glossaries /data/logs /data/output /data/uploaded \
+        /data/whisper-model /data/session-icons /data/cache/huggingface \
+    && chmod +x /app/entrypoint.sh \
+    && chown -R appuser:appuser /app /data /home/appuser
 EXPOSE 5000
-
 ENV PYTHONUNBUFFERED=1
+ENV HOME=/data
+ENV HF_HOME=/data/cache/huggingface
 ENV LIBRETRANSLATE_LOCAL_ENABLED=true
 ENV LIBRETRANSLATE_LOCAL_URL=http://127.0.0.1:5001
 ENV LIBRETRANSLATE_SERVER_URL=http://libretranslate:5000
 ENV SESSION_ICON_DIR=/data/session-icons
-
-RUN chmod +x /app/entrypoint.sh
-
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3).status==200 else 1)" || exit 1
 CMD ["/app/entrypoint.sh"]

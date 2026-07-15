@@ -1,19 +1,18 @@
-/**
- * Live Translate - Main Application
- * Single-page UI with merged Translate + Conversation and modal utilities
- */
+
 (function () {
     'use strict';
 
-    // ========================================================================
-    // State
-    // ========================================================================
+    
+    
+    
 
     let appConfig = {};
     let socket = null;
     let currentSessionId = null;
     let currentSessionTitle = '';
     let currentSessionIconUrl = '';
+    let currentUserId = null;
+    let currentUserRole = null;
     let providerModelPreferences = {};
     const convMessages = { left: [], right: [] };
     const convLiveState = {
@@ -42,25 +41,34 @@
     };
     let lastOfflineCloudWarningAt = 0;
 
-    // ========================================================================
-    // Settings Management
-    // ========================================================================
+    
+    
+    
 
     async function loadSettings() {
         try {
             const res = await fetch('/api/settings');
             if (res.ok) {
                 userSettings = await res.json();
+
                 
-                // Expose globally for api-manager.js and speech-manager.js
+                if (userSettings.storage === 'browser') {
+                    try {
+                        const local = JSON.parse(sessionStorage.getItem('lt_settings') || '{}');
+                        userSettings = Object.assign(userSettings, local);
+                        userSettings.storage = 'browser';
+                    } catch (e) {  }
+                }
+
+                
                 window.userSettings = userSettings;
                 window.updateSetting = updateSetting;
                 window.saveSettings = saveSettings;
                 
-                // Load provider model preferences from settings
+                
                 providerModelPreferences = userSettings.provider_models || {};
                 
-                // Migrate from localStorage if needed
+                
                 const hasLocalStorage = localStorage.getItem('aiAutoCorrect') !== null ||
                                        localStorage.getItem('lt_api_key_priority') !== null;
                 
@@ -68,7 +76,7 @@
                     await migrateLocalStorageSettings();
                 }
                 
-                // Reload api manager with new settings
+                
                 if (window.llmAPIManager) {
                     window.llmAPIManager._loadFromSettings();
                 }
@@ -119,6 +127,10 @@
             if (res.ok) {
                 const data = await res.json();
                 userSettings = data.settings;
+                
+                if (userSettings && userSettings.storage === 'browser') {
+                    try { sessionStorage.setItem('lt_settings', JSON.stringify(userSettings)); } catch (e) {  }
+                }
                 return true;
             }
             return false;
@@ -144,10 +156,11 @@
                 const data = await res.json();
                 userSettings = data.settings;
                 
-                // Clear localStorage as well
-                localStorage.clear();
                 
-                // Reload the page to apply defaults
+                localStorage.clear();
+                sessionStorage.removeItem('lt_settings');
+                
+                
                 showToast('Settings reset to defaults. Reloading...', 'success', 2000);
                 setTimeout(() => window.location.reload(), 2000);
                 return true;
@@ -184,7 +197,6 @@
         } catch (e) {}
 
         await saveSettings({ ...userSettings, ...oldSettings });
-        console.log('Migrated localStorage settings to server');
     }
 
     function getAIAutoCorrectSetting() {
@@ -346,9 +358,9 @@
         element.addEventListener('keydown', onKeyDown);
     }
 
-    // ========================================================================
-    // Init
-    // ========================================================================
+    
+    
+    
 
     document.addEventListener('DOMContentLoaded', async () => {
         await loadConfig();
@@ -356,39 +368,100 @@
         initHeaderCustomization();
         initSocket();
         initModals();
-        renderAISettings(); // Initialize header auto-correct toggle
+        renderAISettings(); 
         initConversationTab();
         initSessionsTab();
         initSettingsTab();
         startServiceStatusMonitor();
+        
+        await handleJoinCode();
     });
 
     async function loadConfig() {
         try {
             const res = await fetch('/api/config');
             appConfig = await res.json();
+            
+            const cu = appConfig.current_user;
+            currentUserId   = cu ? cu.user_id : null;
+            currentUserRole = cu ? cu.role    : null;
         } catch (e) {
             console.error('Failed to load config', e);
             appConfig = {};
         }
     }
 
+    
+    async function handleJoinCode() {
+        const code = document.documentElement.getAttribute('data-lt-join-code');
+        if (!code) return;
+
+        
+        
+        
+        
+        const requireAuth = document.documentElement.getAttribute('data-lt-require-auth') === 'true';
+        const hasToken = !!(localStorage.getItem('lt_auth_token') || sessionStorage.getItem('lt_auth_token_s'));
+        if (requireAuth && !hasToken) return;
+
+        try {
+            const res = await fetch(`/api/sessions/join/${code}`);
+            if (!res.ok) {
+                const d = await res.json().catch(() => ({}));
+                showToast(d.error || 'Share link is invalid or has expired', 'error', 5000);
+                
+                history.replaceState({}, document.title, '/');
+                return;
+            }
+            const data = await res.json();
+            const session = data.session;
+            if (!session || !session.id) return;
+
+            activateSession(session.id, session.title || '', session.icon_url || '');
+            await restoreSessionMessages(session.id);
+            await loadSessions();
+
+            
+            
+            const sessModal = document.getElementById('sessionsModal');
+            if (sessModal && !sessModal.classList.contains('active')) {
+                sessModal.classList.add('active');
+                sessModal.setAttribute('aria-hidden', 'false');
+                document.body.classList.add('modal-open');
+                setTimeout(() => {
+                    sessModal.classList.remove('active');
+                    sessModal.setAttribute('aria-hidden', 'true');
+                    if (!document.querySelector('.app-modal.active')) document.body.classList.remove('modal-open');
+                }, 1800);
+            }
+
+            const accessLabel = data.access === 'edit' ? 'edit access' : 'view access';
+            showToast(`\uD83D\uDD17 Joined \u201C${session.title || 'session'}\u201D (${accessLabel})`, 'success', 4000);
+
+            
+            history.replaceState({}, document.title, '/');
+        } catch (e) {
+            console.error('handleJoinCode error', e);
+        }
+    }
+
     function initSocket() {
         socket = io({
-            transports: ['websocket'],
-            upgrade: false,
+            transports: ['websocket', 'polling'],
+            upgrade: true,
             rememberUpgrade: true,
             reconnection: true,
             reconnectionAttempts: Infinity,
             reconnectionDelay: 500,
             reconnectionDelayMax: 4000,
             timeout: 10000,
+            secure: window.location.protocol === 'https:',
+            rejectUnauthorized: false,
         });
         socket.on('connect', () => {
             socketConnectedOnce = true;
             lastSocketConnectAt = Date.now();
             const transport = socket?.io?.engine?.transport?.name || 'unknown';
-            console.log(`Socket connected (${transport})`);
         });
         socket.on('disconnect', (reason) => {
             const sinceLastConnectMs = Date.now() - lastSocketConnectAt;
@@ -397,7 +470,6 @@
                 (sinceLastConnectMs < 3000 || document.visibilityState === 'hidden');
 
             if (isLikelyTransient) {
-                console.debug('Socket transient disconnect:', reason);
                 return;
             }
 
@@ -409,18 +481,27 @@
             const isStartupNoise = !socketConnectedOnce && /timeout/i.test(message);
 
             if (isUpgradeProbe || isStartupNoise) {
-                console.debug('Socket probe/startup noise:', message);
                 return;
             }
 
             console.warn('Socket connection error:', message);
         });
         socket.on('translation_result', handleSocketTranslation);
+
+        
+        socket.on('session_new_message', (msg) => {
+            if (!msg || !currentSessionId) return;
+            const panel = msg.panel || 'left';
+            const otherSide = panel === 'left' ? 'right' : 'left';
+            
+            createConvBubble(panel, msg.source_text || '', 'original', false, msg.timestamp);
+            createConvBubble(otherSide, msg.translated_text || '', 'translated', false, msg.timestamp);
+        });
     }
 
-    // ========================================================================
-    // Modals
-    // ========================================================================
+    
+    
+    
 
     function initModals() {
         const sessionsBtn = document.getElementById('openSessionsModal');
@@ -511,9 +592,9 @@
         });
     }
 
-    // ========================================================================
-    // Shared Select Setup
-    // ========================================================================
+    
+    
+    
 
     function populateLanguageSelects() {
         const languages = appConfig.translation?.available_languages || [
@@ -536,22 +617,16 @@
                 opt.textContent = lang.name;
                 sel.appendChild(opt);
             }
-            // Log language list loaded
-            if (selId === 'convLeftLang') {
-                const options = Array.from(sel.querySelectorAll('option')).map(o => `${o.value}:${o.textContent}`).join(', ');
-                console.log(`[Languages] LEFT panel options: ${options}`);
-            }
+            
         }
 
         const leftLang = document.getElementById('convLeftLang');
         const rightLang = document.getElementById('convRightLang');
         if (leftLang) {
             leftLang.value = 'en';
-            console.log(`[Languages] LEFT panel initialized to: ${leftLang.value} (${leftLang.options[leftLang.selectedIndex]?.text})`);
         }
         if (rightLang) {
             rightLang.value = 'fr';
-            console.log(`[Languages] RIGHT panel initialized to: ${rightLang.value} (${rightLang.options[rightLang.selectedIndex]?.text})`);
         }
     }
 
@@ -578,7 +653,10 @@
             const res = await fetch('/api/llm/models', {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ provider }),
+                body: JSON.stringify({ 
+                    provider,
+                    force_offline: !!userSettings.force_offline
+                }),
             });
             const data = await res.json();
             return {
@@ -627,9 +705,9 @@
         return [];
     }
 
-    // ========================================================================
-    // Conversation Tab
-    // ========================================================================
+    
+    
+    
 
     function initConversationTab() {
         populateLanguageSelects();
@@ -681,7 +759,7 @@
             }
         });
 
-        // Send buttons
+        
         document.getElementById('convLeftSend').addEventListener('click', () => {
             void sendConvMessage('left');
         });
@@ -689,7 +767,7 @@
             void sendConvMessage('right');
         });
 
-        // Enter to send
+        
         document.getElementById('convLeftInput').addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -703,20 +781,20 @@
             }
         });
 
-        // Mic buttons
+        
         setupConvMic('left');
         setupConvMic('right');
         bindPushToTalkListeners();
 
-        // TTS buttons
+        
         setupConvTTS('left');
         setupConvTTS('right');
 
-        // Populate microphone device dropdowns (requires permission; try now
-        // and re-populate after the first getUserMedia grant).
+        
+        
         populateMicDeviceSelects();
 
-        // New session
+        
         document.getElementById('convNewSession').addEventListener('click', async () => {
             try {
                 const suggestedName = `Conversation ${new Date().toLocaleString()}`;
@@ -846,8 +924,8 @@
             const otherInst = convSpeechInstances[otherSide];
             const engine = window.speechManager?.sttEngine || 'web_speech_api';
 
-            // Web Speech API only allows ONE active recognition per tab.
-            // Block activation if the other side is already active with Web Speech.
+            
+            
             if (engine === 'web_speech_api' && otherInst?.isListening && otherInst.sttEngine === 'web_speech_api') {
                 showToast(
                     'Browser speech recognition can only use one microphone at a time. ' +
@@ -1159,14 +1237,14 @@
             const messagesContainer = document.getElementById(`conv${cap(side)}Messages`);
             if (!messagesContainer) return;
 
-            // Get all message bubbles (conv-message), find the last message
+            
             const bubbles = messagesContainer.querySelectorAll('.conv-message');
             if (bubbles.length === 0) {
                 showToast('No messages to read', 'info');
                 return;
             }
 
-            // Get the last bubble's text (the most recent message)
+            
             const lastBubble = bubbles[bubbles.length - 1];
             const msgText = lastBubble.querySelector('.msg-text')?.textContent?.trim();
             if (!msgText) {
@@ -1174,11 +1252,11 @@
                 return;
             }
 
-            // Get the language for this side
+            
             const langSelect = document.getElementById(`conv${cap(side)}Lang`);
             const lang = langSelect ? langSelect.value : 'en';
 
-            // Use SpeechManager to speak the text
+            
             if (window.speechManager) {
                 ttsBtn.classList.add('reading');
                 ttsBtn.disabled = true;
@@ -1186,7 +1264,7 @@
                 try {
                     window.speechManager.speak(msgText, lang);
                     
-                    // Reset button after a reasonable time
+                    
                     setTimeout(() => {
                         ttsBtn.classList.remove('reading');
                         ttsBtn.disabled = false;
@@ -1202,9 +1280,9 @@
         });
     }
 
-    // =========================================================================
-    // Mic device enumeration
-    // =========================================================================
+    
+    
+    
 
     async function populateMicDeviceSelects() {
         const selects = [
@@ -1214,8 +1292,8 @@
         if (!selects.length) return;
 
         try {
-            // enumerateDevices may return empty labels until permission is granted.
-            // Request a brief stream to unlock labels if we haven't already.
+            
+            
             let devices = await navigator.mediaDevices.enumerateDevices();
             const hasLabels = devices.some(d => d.kind === 'audioinput' && d.label);
             if (!hasLabels) {
@@ -1224,16 +1302,16 @@
                     s.getTracks().forEach(t => t.stop());
                     devices = await navigator.mediaDevices.enumerateDevices();
                 } catch {
-                    // Permission denied — leave selects with just "Default microphone"
+                    
                     return;
                 }
             }
 
             const mics = devices.filter(d => d.kind === 'audioinput');
             selects.forEach(sel => {
-                // Remember current selection
+                
                 const prev = sel.value;
-                // Rebuild options
+                
                 sel.innerHTML = '<option value="">Default microphone</option>';
                 mics.forEach((mic, i) => {
                     const opt = document.createElement('option');
@@ -1241,13 +1319,13 @@
                     opt.textContent = mic.label || `Microphone ${i + 1}`;
                     sel.appendChild(opt);
                 });
-                // Restore previous selection if still valid
+                
                 if (prev && sel.querySelector(`option[value="${CSS.escape(prev)}"]`)) {
                     sel.value = prev;
                 }
             });
         } catch (err) {
-            console.debug('Could not enumerate audio devices:', err);
+            
         }
     }
 
@@ -1412,8 +1490,6 @@
         const srcLang = document.getElementById(`conv${cap(side)}Lang`).value;
         const tgtLang = document.getElementById(`conv${cap(otherSide)}Lang`).value;
         
-        // Debug logging
-        console.log(`[Translation] Panel: ${side} (typing here) | Source Lang: ${srcLang} | Target Lang: ${tgtLang} | Text: "${text}"`);
         const engine = document.getElementById('convEngine').value;
         const provider = document.getElementById('convProvider').value;
         const model = document.getElementById('convModel')?.value || getProviderModelPreference(provider);
@@ -1442,6 +1518,7 @@
             provider: effectiveProvider,
             model: effectiveModel,
             panel: side,
+            session_id: currentSessionId,   
             api_key: apiKey,
             api_key_source: apiKeySource,
             live_mode: true,
@@ -1450,18 +1527,7 @@
             ai_auto_correct: getAIAutoCorrectSetting(),
         });
 
-        if (isFinal && currentSessionId) {
-            fetch(`/api/sessions/${currentSessionId}/messages`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    source_text: text,
-                    source_language: srcLang,
-                    target_language: tgtLang,
-                    panel: side,
-                }),
-            }).catch(() => { });
-        }
+        
     }
 
     function upsertLiveBubble(side, type, text, isLive, key, sourceSide, isTranslating) {
@@ -1524,10 +1590,10 @@
             warnCloudDisabledIfNeeded();
         }
 
-        // Show original message on sender side
+        
         addConvBubble(side, text, 'original');
 
-        // Translate via socket for real-time
+        
         const apiKey = window.llmAPIManager ? window.llmAPIManager.getApiKey(provider) : '';
         const apiKeySource = window.llmAPIManager ? window.llmAPIManager.getApiKeyPriority() : 'client';
         socket.emit('translate', {
@@ -1536,12 +1602,13 @@
             provider: effectiveProvider,
             model: effectiveModel,
             panel: side,
+            session_id: currentSessionId,   
             api_key: apiKey,
             api_key_source: apiKeySource,
             ai_auto_correct: getAIAutoCorrectSetting(),
         });
 
-        // Message will be saved to session when translation is received (via handleSocketTranslation)
+        
     }
 
     async function handleSocketTranslation(data) {
@@ -1617,7 +1684,7 @@
             }
             addConvBubble(otherSide, translated, 'translated');
             
-            // Update session with complete translation (source + translation)
+            
             if (currentSessionId) {
                 const srcLang = document.getElementById(`conv${cap(panel)}Lang`)?.value || 'en';
                 const tgtLang = document.getElementById(`conv${cap(otherSide)}Lang`)?.value || 'fr';
@@ -1637,7 +1704,7 @@
         } else {
             addConvBubble(otherSide, `⚠ ${effectiveResult.error}`, 'translated');
             
-            // Save failed translation attempt for session history
+            
             if (currentSessionId) {
                 const srcLang = document.getElementById(`conv${cap(panel)}Lang`)?.value || 'en';
                 const tgtLang = document.getElementById(`conv${cap(otherSide)}Lang`)?.value || 'fr';
@@ -1661,7 +1728,7 @@
         createConvBubble(side, text, type, false);
     }
 
-    function createConvBubble(side, text, type, isLive) {
+    function createConvBubble(side, text, type, isLive, timestamp = null) {
         const container = document.getElementById(`conv${cap(side)}Messages`);
         const bubble = document.createElement('div');
         bubble.className = `conv-message ${type}`;
@@ -1675,7 +1742,9 @@
 
         const meta = document.createElement('div');
         meta.className = 'msg-meta';
-        meta.textContent = new Date().toLocaleTimeString();
+        meta.textContent = timestamp
+            ? new Date(timestamp).toLocaleTimeString()
+            : new Date().toLocaleTimeString();
         bubble.appendChild(body);
         bubble.appendChild(meta);
         container.appendChild(bubble);
@@ -1683,12 +1752,12 @@
         return bubble;
     }
 
-    // ========================================================================
-    // Sessions Tab
-    // ========================================================================
+    
+    
+    
 
     function initSessionsTab() {
-        document.getElementById('refreshSessions').addEventListener('click', loadSessions);
+        document.getElementById('refreshSessions').addEventListener('click', () => loadSessions());
         document.getElementById('viewActiveSession').addEventListener('click', async () => {
             if (!currentSessionId) return;
             await openSession(currentSessionId);
@@ -1732,6 +1801,9 @@
     }
 
     async function loadSessions(existingSessions = null) {
+        
+        
+        if (existingSessions && !Array.isArray(existingSessions)) existingSessions = null;
         try {
             const sessions = existingSessions || await fetchSessions();
             const list = document.getElementById('sessionsList');
@@ -1742,37 +1814,55 @@
                 return;
             }
 
+            const visIcon  = { private: '\uD83D\uDD12', shared: '\uD83D\uDD17', public: '\uD83C\uDF0D' };
+            const visLabel = { private: 'Private', shared: 'Shared', public: 'Public' };
+
             list.innerHTML = '';
             for (const s of sessions) {
-                const iconSrc = getSessionIconSrc(s.id, s.title, s.icon_url);
+                const iconSrc   = getSessionIconSrc(s.id, s.title, s.icon_url);
+                const vis       = s.visibility || 'public';
+                const hasPass   = !!s.has_password;
+                const isOwner   = currentUserId && s.owner_id === currentUserId;
+                const isAdmin   = currentUserRole === 'admin';
+                const isActive  = s.id === currentSessionId;
+                const canAccess = !hasPass || isOwner || isAdmin;
+
                 const item = document.createElement('div');
-                item.className = `session-item${s.id === currentSessionId ? ' active' : ''}`;
+                item.className = `session-item compact${isActive ? ' active' : ''}`;
                 item.dataset.sessionId = s.id;
+
+                const visTip = hasPass ? `${visLabel[vis]} \u2022 Password protected` : visLabel[vis];
+                const passLock = hasPass ? ' \uD83D\uDD10' : '';
+
                 item.innerHTML = `
-                    <div class="session-item-left">
-                        <img class="session-identicon-image session-list-identicon" src="${escapeHtml(iconSrc)}" alt="Session icon" />
-                    </div>
-                    <div class="session-item-info">
-                        <div class="session-item-line">
-                            <span class="session-item-title">${escapeHtml(s.title)}</span>
-                            <span class="session-item-desc">${s.type} · ${s.message_count} messages · ${s.languages.join(', ')}</span>
-                        </div>
-                    </div>
-                    <div class="session-item-side">
-                        <div class="session-item-meta">${formatDate(s.updated_at)}</div>
-                        <div class="session-item-actions">
-                            ${s.id === currentSessionId ? '<span class="session-active-badge">Active</span>' : `<button class="btn-secondary btn-session-use" type="button">Use</button>`}
-                            <button class="btn-secondary btn-session-manage" type="button">Manage</button>
-                        </div>
-                    </div>
-                `;
+<img class="session-list-icon" src="${escapeHtml(iconSrc)}" alt="" />
+<div class="session-item-body">
+  <span class="session-item-title">${escapeHtml(s.title)}</span>
+  <span class="session-item-meta">${s.message_count} msg${s.message_count !== 1 ? 's' : ''} &middot; ${formatDate(s.updated_at)}</span>
+</div>
+<span class="session-vis-badge vis-${escapeHtml(vis)}" title="${escapeHtml(visTip)}">${visIcon[vis] || '\uD83C\uDF0D'}${passLock}</span>
+<div class="session-item-actions">
+  ${isActive ? '<span class="session-active-badge">Active</span>' :
+    `<button class="btn-secondary btn-session-use" type="button"${!canAccess ? ' data-locked="true"' : ''}>${
+       canAccess ? 'Use' : '\uD83D\uDD10 Join'
+    }</button>`
+  }
+  <button class="btn-secondary btn-session-manage" type="button" title="Manage">&#9881;</button>
+</div>`;
+
                 const useBtn = item.querySelector('.btn-session-use');
                 useBtn?.addEventListener('click', async (event) => {
                     event.stopPropagation();
+                    if (useBtn.dataset.locked === 'true') {
+                        
+                        const pw = await promptJoinPassword(s.title);
+                        if (pw === null) return;   
+                        const ok = await tryJoinWithPassword(s.id, pw);
+                        if (!ok) return;
+                    }
                     activateSession(s.id, s.title, s.icon_url);
                     await restoreSessionMessages(s.id);
                     await loadSessions(sessions);
-                    // Close using modal state classes so reopen works reliably.
                     const sessionsModal = document.getElementById('sessionsModal');
                     sessionsModal?.classList.remove('active');
                     sessionsModal?.setAttribute('aria-hidden', 'true');
@@ -1787,9 +1877,11 @@
                     await openSession(s.id);
                 });
                 item.addEventListener('click', async () => {
-                    activateSession(s.id, s.title, s.icon_url);
-                    await restoreSessionMessages(s.id);
-                    await loadSessions();
+                    if (!isActive) {
+                        activateSession(s.id, s.title, s.icon_url);
+                        await restoreSessionMessages(s.id);
+                        await loadSessions();
+                    }
                 });
                 list.appendChild(item);
             }
@@ -1798,29 +1890,83 @@
         }
     }
 
+    
+    async function promptJoinPassword(sessionTitle) {
+        return new Promise(resolve => {
+            const overlay = document.createElement('div');
+            overlay.className = 'app-modal active';
+            overlay.setAttribute('aria-modal', 'true');
+            overlay.innerHTML = `
+<div class="app-modal-dialog auth-dialog">
+  <div class="app-modal-header">
+    <h2>Password required</h2>
+    <button class="icon-btn join-pw-cancel" type="button" title="Cancel">&times;</button>
+  </div>
+  <div class="app-modal-body auth-body">
+    <p class="auth-intro">\uD83D\uDD10 <strong>${escapeHtml(sessionTitle)}</strong> requires a password to join.</p>
+    <div class="auth-error" id="joinPwError" style="display:none;"></div>
+    <form class="auth-form" id="joinPwForm">
+      <label class="auth-field">
+        <span class="auth-label">Join password</span>
+        <input type="password" class="auth-input" id="joinPwInput" autocomplete="off" placeholder="Enter password\u2026" />
+      </label>
+      <button type="submit" class="btn-primary auth-submit">Join session</button>
+    </form>
+  </div>
+</div>`;
+            document.body.appendChild(overlay);
+            document.body.classList.add('modal-open');
+            const input = overlay.querySelector('#joinPwInput');
+            const form  = overlay.querySelector('#joinPwForm');
+            const cancel = overlay.querySelector('.join-pw-cancel');
+            setTimeout(() => input.focus(), 50);
+            const close = (val) => {
+                overlay.remove();
+                if (!document.querySelector('.app-modal.active')) document.body.classList.remove('modal-open');
+                resolve(val);
+            };
+            cancel.addEventListener('click', () => close(null));
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+            form.addEventListener('submit', (e) => { e.preventDefault(); close(input.value); });
+        });
+    }
+
+    
+    async function tryJoinWithPassword(sessionId, password) {
+        try {
+            const res = await fetch(`/api/sessions/${sessionId}?join_password=${encodeURIComponent(password)}`);
+            if (res.status === 403) {
+                showToast('Incorrect password', 'error');
+                return false;
+            }
+            return res.ok;
+        } catch (e) {
+            showToast('Failed to verify password', 'error');
+            return false;
+        }
+    }
+
     async function restoreSessionMessages(sessionId) {
-        /**Load session messages into the active conversation interface.*/
+        
         try {
             const res = await fetch(`/api/sessions/${sessionId}`);
             if (!res.ok) return;
             const data = await res.json();
             
-            // Clear existing conversation messages
+            
             convMessages.left = [];
             convMessages.right = [];
             document.getElementById('convLeftMessages').innerHTML = '';
             document.getElementById('convRightMessages').innerHTML = '';
             
-            // Restore messages in order
+            
             for (const msg of (data.messages || [])) {
                 const side = msg.panel || 'left';
                 const otherSide = side === 'left' ? 'right' : 'left';
                 
-                // Add source message on the sending side
-                createConvBubble(side, msg.source_text || '', 'original', false);
+                createConvBubble(side, msg.source_text || '', 'original', false, msg.timestamp);
                 
-                // Add translated message on the receiving side
-                createConvBubble(otherSide, msg.translated_text || '', 'translated', false);
+                createConvBubble(otherSide, msg.translated_text || '', 'translated', false, msg.timestamp);
             }
         } catch (e) {
             console.error('Failed to restore session messages:', e);
@@ -1838,9 +1984,90 @@
             document.getElementById('sessionTitle').textContent = data.title;
             highlightActiveSession(sessionId);
 
+            
+            const isOwner = currentUserId && data.owner_id === currentUserId;
+            const isAdmin = currentUserRole === 'admin';
+            const visPanel = document.getElementById('sessionVisPanel');
+            if (visPanel && (isOwner || isAdmin)) {
+                visPanel.style.display = '';
+                const visSelect = document.getElementById('sessionVisSelect');
+                visSelect.value = data.visibility || 'private';
+
+                const passRow = document.getElementById('sessionPassRow');
+                const passEnabled = document.getElementById('sessionPassEnabled');
+                const passInput = document.getElementById('sessionPassInput');
+                const visFeedback = document.getElementById('sessionVisFeedback');
+
+                
+                const syncPassRow = () => {
+                    passRow.style.display = visSelect.value === 'public' ? '' : 'none';
+                };
+                syncPassRow();
+                visSelect.addEventListener('change', syncPassRow);
+
+                passEnabled.checked = !!data.has_password;
+                passInput.style.display = passEnabled.checked ? '' : 'none';
+                passEnabled.addEventListener('change', () => {
+                    passInput.style.display = passEnabled.checked ? '' : 'none';
+                    if (!passEnabled.checked) passInput.value = '';
+                });
+
+                
+                const saveBtn = document.getElementById('sessionVisSave');
+                const newSaveBtn = saveBtn.cloneNode(true);
+                saveBtn.parentNode.replaceChild(newSaveBtn, saveBtn);
+                newSaveBtn.addEventListener('click', async () => {
+                    visFeedback.textContent = '';
+                    const vis = visSelect.value;
+                    const pwVal = passEnabled.checked ? passInput.value : null;
+                    
+                    const body = { visibility: vis };
+                    if (!passEnabled.checked) {
+                        body.join_password = null;   
+                    } else if (pwVal) {
+                        body.join_password = pwVal;  
+                    }
+                    
+                    const r = await fetch(`/api/sessions/${sessionId}`, {
+                        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    const d = await r.json();
+                    if (r.ok) {
+                        visFeedback.style.color = 'var(--success, #86efac)';
+                        visFeedback.textContent = '✓ Access settings saved';
+                        passInput.value = '';
+                        passEnabled.checked = !!d.has_password;
+                        passInput.style.display = passEnabled.checked ? '' : 'none';
+                        await loadSessions();
+                    } else {
+                        visFeedback.style.color = 'var(--error, #fca5a5)';
+                        visFeedback.textContent = d.error || 'Save failed';
+                    }
+                });
+
+                
+                const shareBtn = document.getElementById('sessionShareBtn');
+                const newShareBtn = shareBtn.cloneNode(true);
+                shareBtn.parentNode.replaceChild(newShareBtn, shareBtn);
+                newShareBtn.addEventListener('click', async () => {
+                    const r = await fetch(`/api/sessions/${sessionId}/share`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ access: 'view' }),
+                    });
+                    if (!r.ok) { showToast('Failed to generate share code', 'error'); return; }
+                    const d = await r.json();
+                    const link = `${location.origin}/join/${d.share_code}`;
+                    try { await navigator.clipboard.writeText(link); showToast('Share link copied!', 'success'); }
+                    catch (e) { prompt('Copy this share link:', link); }
+                });
+            } else if (visPanel) {
+                visPanel.style.display = 'none';
+            }
+
+            
             const container = document.getElementById('sessionMessages');
             container.innerHTML = '';
-
             for (const msg of (data.messages || [])) {
                 const el = document.createElement('div');
                 el.className = 'session-msg';
@@ -1857,12 +2084,20 @@
     }
 
     function activateSession(sessionId, sessionTitle, iconUrl = '') {
+        
+        if (currentSessionId && currentSessionId !== sessionId && socket) {
+            socket.emit('leave_session_room', { session_id: currentSessionId });
+        }
         currentSessionId = sessionId;
         currentSessionTitle = sessionTitle || '';
         currentSessionIconUrl = iconUrl || '';
         requiresInitialSessionSelection = false;
         highlightActiveSession(sessionId);
         updateActiveSessionSummary();
+        
+        if (sessionId && socket) {
+            socket.emit('join_session_room', { session_id: sessionId });
+        }
     }
 
     function updateActiveSessionSummary() {
@@ -2188,14 +2423,15 @@
         return Math.abs(hash || 1);
     }
 
-    // ========================================================================
-    // Settings Tab
-    // ========================================================================
+    
+    
+    
 
     function initSettingsTab() {
         renderOfflineModeSettings();
         renderApiPrioritySettings();
         renderProviderConfigList();
+        renderStorageInfo();
         renderSpeechSettings();
         initGlossaryImport();
         loadGlossaries();
@@ -2215,10 +2451,10 @@
         const autoCorrectCheckbox = document.getElementById('aiAutoCorrectHeader');
         if (!autoCorrectCheckbox) return;
 
-        // Load from userSettings
+        
         autoCorrectCheckbox.checked = getAIAutoCorrectSetting();
 
-        // Save on change
+        
         autoCorrectCheckbox.addEventListener('change', async () => {
             await updateSetting('ai_auto_correct', autoCorrectCheckbox.checked);
             showToast(
@@ -2294,11 +2530,139 @@
         });
     }
 
+    function renderStorageInfo() {
+        const storageEl = document.getElementById('storageLocation');
+        const storageBtn = document.getElementById('storageInfoBtn');
+        if (!storageEl || !storageBtn) return;
+
+        const storage = window.userSettings?.storage || 'unknown';
+        const isServer = storage === 'server';
+        
+        if (isServer) {
+            storageEl.textContent = '🔒 Storage: Server (encrypted per-user)';
+            storageEl.style.color = '#28a745';
+        } else {
+            storageEl.textContent = '🌐 Storage: Browser Session (ephemeral)';
+            storageEl.style.color = '#ffc107';
+        }
+
+        storageBtn.onclick = (e) => {
+            e.preventDefault();
+            const cmd = "sessionStorage.getItem('lt_settings')";
+            const msg = isServer 
+                ? `API keys are encrypted and stored on the server per-user. They will be decrypted when you load settings.`
+                : `API keys are stored in your browser's session storage only. They will be cleared when you close the browser.\n\nTo view stored settings in browser console, run:\n\nClick to copy command to clipboard.`;
+            
+            
+            const overlay = document.createElement('div');
+            overlay.className = 'app-modal active';
+            overlay.style.zIndex = '10000';
+            
+            
+            const dialog = document.createElement('div');
+            dialog.className = 'app-modal-dialog';
+            dialog.style.width = 'min(420px, 90vw)';
+            dialog.style.maxHeight = 'auto';
+            
+            
+            const header = document.createElement('div');
+            header.className = 'app-modal-header';
+            header.innerHTML = '<div style="font-weight: 600;">🔐 Storage Location</div>';
+            
+            
+            const body = document.createElement('div');
+            body.className = 'app-modal-body';
+            body.style.fontSize = '14px';
+            body.style.lineHeight = '1.6';
+            body.innerHTML = msg.replace(/\n/g, '<br>');
+            
+            
+            if (!isServer) {
+                const cmdDiv = document.createElement('div');
+                cmdDiv.style.cssText = 'background: var(--bg-tertiary); padding: 12px; border-radius: 6px; font-family: "Fira Code", "Monaco", monospace; font-size: 12px; cursor: pointer; user-select: all; margin: 12px 0; word-break: break-all; transition: all 0.2s; line-height: 1.5;';
+                cmdDiv.title = 'Click to copy';
+                
+                
+                cmdDiv.innerHTML = `<span style="color: #3b82f6;">sessionStorage</span><span style="color: #a0a0b0;">.</span><span style="color: #60a5fa;">getItem</span><span style="color: #a0a0b0;">(</span><span style="color: #86efac;">'</span><span style="color: #22c55e;">lt_settings</span><span style="color: #86efac;">'</span><span style="color: #a0a0b0;">)</span>`;
+                
+                cmdDiv.onmouseover = () => {
+                    cmdDiv.style.background = 'rgba(168, 85, 247, 0.15)';
+                    cmdDiv.style.boxShadow = '0 0 0 1px rgba(168, 85, 247, 0.3), inset 0 0 0 1px rgba(168, 85, 247, 0.1)';
+                };
+                cmdDiv.onmouseout = () => {
+                    cmdDiv.style.background = 'var(--bg-tertiary)';
+                    cmdDiv.style.boxShadow = 'none';
+                };
+                cmdDiv.addEventListener('click', () => {
+                    
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(cmd).then(() => {
+                            showToast('Command copied to clipboard', 'success');
+                        }).catch(() => {
+                            fallbackCopy(cmd);
+                        });
+                    } else {
+                        fallbackCopy(cmd);
+                    }
+                });
+                body.appendChild(cmdDiv);
+            }
+            
+            function fallbackCopy(text) {
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.opacity = '0';
+                document.body.appendChild(textArea);
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    showToast('Command copied to clipboard', 'success');
+                } catch (err) {
+                    showToast('Failed to copy command', 'error');
+                }
+                document.body.removeChild(textArea);
+            }
+            
+            
+            const footer = document.createElement('div');
+            footer.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px; padding: var(--spacing-lg); border-top: 1px solid var(--border-color); background: var(--bg-secondary);';
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'btn-secondary';
+            closeBtn.textContent = 'Close';
+            closeBtn.onclick = () => overlay.remove();
+            footer.appendChild(closeBtn);
+            
+            
+            dialog.appendChild(header);
+            dialog.appendChild(body);
+            dialog.appendChild(footer);
+            overlay.appendChild(dialog);
+            
+            
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) overlay.remove();
+            });
+            
+            document.body.appendChild(overlay);
+        };
+    }
+
     function renderProviderConfigList() {
         const container = document.getElementById('providerConfigList');
         const providers = appConfig.llm?.providers || {};
         const serverKeys = appConfig.server_api_keys || {};
+        const allowClientKeys = appConfig.features?.allow_client_api_keys ?? true;
         container.innerHTML = '';
+
+        
+        if (!allowClientKeys) {
+            const notice = document.createElement('div');
+            notice.className = 'provider-config-notice';
+            notice.style.cssText = 'background-color: var(--bg-secondary); border-left: 4px solid var(--text-muted); padding: 12px 16px; margin-bottom: 16px; border-radius: 4px; color: var(--text-muted); font-size: 0.9em;';
+            notice.innerHTML = '<strong>ℹ️ Client API Keys Disabled:</strong> Only server-provided API keys will be used. To enable user-provided API keys, set <code style="background-color: var(--bg-tertiary); padding: 2px 6px; border-radius: 2px;">ALLOW_CLIENT_API_KEYS=true</code> in your configuration.';
+            container.appendChild(notice);
+        }
 
         for (const [id, prov] of Object.entries(providers)) {
             const serverAvail = serverKeys[id]?.available;
@@ -2308,6 +2672,20 @@
 
             const item = document.createElement('div');
             item.className = 'provider-config-item';
+            
+            
+            let keyInputHtml = '';
+            if (!requiresKey) {
+                keyInputHtml = '<span class="provider-no-key">Local provider</span>';
+            } else if (!allowClientKeys) {
+                keyInputHtml = '<span class="provider-no-key" style="color: var(--text-muted);">Server-provided (client keys disabled)</span>';
+            } else {
+                keyInputHtml = `<input type="password" placeholder="API Key" value="${clientKey}" data-provider="${id}">`;
+            }
+            
+            
+            const saveButtonHtml = (requiresKey && allowClientKeys) ? `<button class="btn-secondary save-key" data-provider="${id}">Save</button>` : '';
+            
             item.innerHTML = `
                 <div class="provider-config-row">
                     <div class="provider-label-line">
@@ -2316,7 +2694,7 @@
                         ${requiresKey ? `<span class="key-status ${serverAvail ? 'tag-active' : 'tag-inactive'}">${serverAvail ? 'Server key' : 'No server key'}</span>` : '<span class="key-status tag-neutral">No key</span>'}
                     </div>
                     <div class="provider-input-wrap">
-                        ${requiresKey ? `<input type="password" placeholder="API Key" value="${clientKey}" data-provider="${id}">` : '<span class="provider-no-key">Local provider</span>'}
+                        ${keyInputHtml}
                     </div>
                     <div class="provider-model-wrap">
                         <select class="provider-model-select" data-provider="${id}">
@@ -2325,7 +2703,7 @@
                         <button class="btn-secondary load-provider-models" data-provider="${id}" title="Refresh Models">🔄</button>
                     </div>
                     <div class="provider-actions">
-                        ${requiresKey ? `<button class="btn-secondary save-key" data-provider="${id}">Save</button>` : ''}
+                        ${saveButtonHtml}
                         <button class="btn-secondary test-provider" data-provider="${id}">Test</button>
                         <span class="provider-status" id="provStatus_${id}">—</span>
                     </div>
@@ -2346,7 +2724,10 @@
                 try {
                     const res = await fetch('/api/llm/test', {
                         method: 'POST', headers,
-                        body: JSON.stringify({ provider: prov }),
+                        body: JSON.stringify({ 
+                            provider: prov,
+                            force_offline: !!userSettings.force_offline
+                        }),
                     });
                     const data = await res.json();
                     if (data.connected) {
@@ -2562,7 +2943,7 @@
             whisperInfo.innerHTML = '<p style="color: var(--success);">Whisper is available on this server.</p>';
         } else {
             whisperInfo.innerHTML = '<p style="color: var(--text-muted);">Whisper not enabled. Set WHISPER_ENABLED=true to activate.</p>';
-            // Disable whisper option
+            
             const whisperOpt = sttSel.querySelector('option[value="whisper"]');
             if (whisperOpt) whisperOpt.disabled = true;
         }
@@ -2776,9 +3157,9 @@
         }
     }
 
-    // ========================================================================
-    // Status Checks
-    // ========================================================================
+    
+    
+    
 
     function setServiceLoadingBanner(visible, message = '') {
         const banner = document.getElementById('serviceLoadingBanner');
@@ -2841,7 +3222,7 @@
             whisperReachable: false,
         };
 
-        // Offline Mode
+        
         try {
             const res = await fetch('/api/offline-status');
             const data = await res.json();
@@ -2872,7 +3253,7 @@
 
             syncOfflinePolicyNotice();
         } catch {
-            // If we can't check, assume online
+            
             runtimeOfflineStatus = {
                 known: false,
                 offline: false,
@@ -2883,7 +3264,7 @@
             syncOfflinePolicyNotice();
         }
 
-        // LibreTranslate
+        
         try {
             const res = await fetch('/api/libretranslate/status');
             const data = await res.json();
@@ -2895,7 +3276,7 @@
             document.getElementById('libreStatus').className = 'status-dot offline';
         }
 
-        // Whisper
+        
         try {
             const res = await fetch('/api/whisper/status');
             const data = await res.json();
@@ -2916,9 +3297,9 @@
         return status;
     }
 
-    // ========================================================================
-    // Utilities
-    // ========================================================================
+    
+    
+    
 
     function showToast(message, type = 'info', duration = 4000) {
         const container = document.getElementById('toastContainer');

@@ -8,6 +8,8 @@ import json
 import logging
 import tempfile
 
+import crypto_manager
+
 logger = logging.getLogger(__name__)
 
 SETTINGS_FILE = os.environ.get('SETTINGS_FILE', '/data/settings.json')
@@ -36,12 +38,10 @@ DEFAULT_SETTINGS = {
     'offline_strict': False,
 }
 
-
 def _ensure_file():
     """Ensure settings file exists with defaults."""
     if not os.path.exists(SETTINGS_FILE):
         _atomic_write_json(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
-
 
 def _atomic_write_json(path, data):
     directory = os.path.dirname(path)
@@ -58,14 +58,12 @@ def _atomic_write_json(path, data):
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-
 def get_settings():
     """Get all user settings."""
     _ensure_file()
     try:
         with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
             settings = json.load(f)
-        # Merge with defaults to ensure all keys exist
         merged = DEFAULT_SETTINGS.copy()
         merged.update(settings)
         return merged
@@ -73,12 +71,10 @@ def get_settings():
         logger.error(f"Error reading settings: {e}")
         return DEFAULT_SETTINGS.copy()
 
-
 def save_settings(settings):
     """Save user settings."""
     _ensure_file()
     try:
-        # Validate and merge with defaults
         merged = DEFAULT_SETTINGS.copy()
         merged.update(settings)
 
@@ -88,13 +84,11 @@ def save_settings(settings):
         logger.error(f"Error saving settings: {e}")
         return {'success': False, 'error': str(e)}
 
-
 def update_setting(key, value):
     """Update a single setting."""
     settings = get_settings()
     settings[key] = value
     return save_settings(settings)
-
 
 def reset_settings():
     """Reset all settings to defaults."""
@@ -105,7 +99,40 @@ def reset_settings():
         logger.error(f"Error resetting settings: {e}")
         return {'success': False, 'error': str(e)}
 
-
 def get_default_settings():
     """Get default settings (for comparison or reset preview)."""
     return DEFAULT_SETTINGS.copy()
+
+def merge_with_defaults(partial):
+    """Return DEFAULT_SETTINGS overlaid with the recognized keys from `partial`."""
+    merged = DEFAULT_SETTINGS.copy()
+    if isinstance(partial, dict):
+        for key, value in partial.items():
+            if key in DEFAULT_SETTINGS:
+                merged[key] = value
+    return merged
+
+def encrypt_api_keys(settings):
+    """Return a copy of settings with api_keys values encrypted for storage."""
+    settings = dict(settings)
+    keys = settings.get('api_keys') or {}
+    encrypted = {}
+    for provider, value in keys.items():
+        if value:
+            encrypted[provider] = crypto_manager.encrypt(value)
+    settings['api_keys'] = encrypted
+    return settings
+
+def decrypt_api_keys(settings):
+    """Return a copy of settings with api_keys values decrypted for client use."""
+    settings = dict(settings)
+    keys = settings.get('api_keys') or {}
+    decrypted = {}
+    for provider, value in keys.items():
+        if not value:
+            continue
+        plain = crypto_manager.decrypt(value)
+        if plain:
+            decrypted[provider] = plain
+    settings['api_keys'] = decrypted
+    return settings

@@ -1,7 +1,4 @@
-/**
- * Keyboard Manager - Virtual keyboard layouts for non-Latin scripts.
- * Supports Arabic, Hebrew, Cyrillic, Devanagari, CJK input methods, etc.
- */
+
 (function () {
     'use strict';
 
@@ -124,7 +121,7 @@
             const keysContainer = document.getElementById('keyboardKeys');
             keysContainer.innerHTML = '';
 
-            // Populate layout selector
+            
             const layoutSelect = document.getElementById('keyboardLayout');
             layoutSelect.innerHTML = '';
             for (const [id, l] of Object.entries(LAYOUTS)) {
@@ -135,7 +132,7 @@
                 layoutSelect.appendChild(opt);
             }
 
-            // Render key rows
+            
             for (const row of layout.rows) {
                 const rowEl = document.createElement('div');
                 rowEl.className = 'keyboard-row';
@@ -149,7 +146,7 @@
                 keysContainer.appendChild(rowEl);
             }
 
-            // Add utility row (backspace, space, enter)
+            
             const utilRow = document.createElement('div');
             utilRow.className = 'keyboard-row';
 

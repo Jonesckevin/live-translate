@@ -4,6 +4,7 @@ Stored as JSON files in /data/glossaries/.
 """
 
 import os
+import re
 import json
 import logging
 import csv
@@ -17,10 +18,19 @@ GLOSSARY_DIR = os.environ.get('GLOSSARY_DIR', '/data/glossaries')
 SINGLE_GLOSSARY_ID = 'Glossary'
 SINGLE_GLOSSARY_NAME = 'Glossary'
 
+_VALID_ID_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
+
+def _is_safe_id(value):
+    """Return True only for identifiers safe to interpolate into a file path."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and '..' not in value
+        and _VALID_ID_RE.match(value) is not None
+    )
 
 def _ensure_dir():
     os.makedirs(GLOSSARY_DIR, exist_ok=True)
-
 
 def _atomic_write_json(path, data):
     directory = os.path.dirname(path)
@@ -35,7 +45,6 @@ def _atomic_write_json(path, data):
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-
 
 def list_glossaries():
     """List all glossaries."""
@@ -60,9 +69,11 @@ def list_glossaries():
                 logger.warning(f"Error reading glossary {fname}: {e}")
     return glossaries
 
-
 def get_glossary(glossary_id):
     """Get a glossary by ID."""
+    if not _is_safe_id(glossary_id):
+        logger.warning("Rejected unsafe glossary id in get_glossary")
+        return None
     _ensure_dir()
     fpath = os.path.join(GLOSSARY_DIR, f"{glossary_id}.json")
     if not os.path.exists(fpath):
@@ -70,13 +81,14 @@ def get_glossary(glossary_id):
     with open(fpath, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-
 def create_glossary(name, source_language, target_language, entries=None, glossary_id=None):
     """Create a new glossary. entries: dict of {source_term: target_term}."""
     _ensure_dir()
     if glossary_id is None:
         import uuid
         glossary_id = str(uuid.uuid4())[:8]
+    elif not _is_safe_id(glossary_id):
+        raise ValueError('Invalid glossary id')
     now = datetime.utcnow().isoformat() + 'Z'
     existing_created_at = None
     fpath = os.path.join(GLOSSARY_DIR, f"{glossary_id}.json")
@@ -97,7 +109,6 @@ def create_glossary(name, source_language, target_language, entries=None, glossa
     }
     _atomic_write_json(fpath, data)
     return {'id': glossary_id, **data}
-
 
 def import_glossary_from_text(name, source_language, target_language, text, filename=''):
     """Import glossary entries from JSON/CSV/TSV/TXT text and create a glossary."""
@@ -125,7 +136,6 @@ def import_glossary_from_text(name, source_language, target_language, text, file
         target_language=target_language,
         entries=entries,
     )
-
 
 def replace_single_glossary_from_text(source_language, target_language, text, filename=''):
     """Replace all glossary data with a single glossary named 'Glossary'."""
@@ -165,13 +175,11 @@ def replace_single_glossary_from_text(source_language, target_language, text, fi
         glossary_id=SINGLE_GLOSSARY_ID,
     )
 
-
 def _default_name_from_filename(filename):
     base = os.path.basename(filename or '')
     if not base:
         return f"Glossary {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
     return os.path.splitext(base)[0] or 'Imported Glossary'
-
 
 def _parse_entries(text, fmt):
     if fmt == 'json':
@@ -181,7 +189,6 @@ def _parse_entries(text, fmt):
     if fmt == 'tsv':
         return _parse_delimited_entries(text, '\t')
     return _parse_text_entries(text)
-
 
 def _parse_json_entries(text):
     try:
@@ -214,7 +221,6 @@ def _parse_json_entries(text):
 
     raise ValueError('JSON format must be an object map or an array of objects')
 
-
 def _parse_delimited_entries(text, delimiter):
     entries = {}
     reader = csv.reader(StringIO(text), delimiter=delimiter)
@@ -226,7 +232,6 @@ def _parse_delimited_entries(text, delimiter):
         source_term = (row[0] if len(row) > 0 else '').strip()
         target_term = (row[1] if len(row) > 1 else '').strip()
 
-        # Skip header row when it looks like labels.
         if idx == 0:
             lhs = source_term.lower()
             rhs = target_term.lower()
@@ -237,7 +242,6 @@ def _parse_delimited_entries(text, delimiter):
             entries[source_term] = target_term
 
     return entries
-
 
 def _parse_text_entries(text):
     entries = {}
@@ -262,9 +266,11 @@ def _parse_text_entries(text):
 
     return entries
 
-
 def update_glossary(glossary_id, name=None, entries=None):
     """Update an existing glossary."""
+    if not _is_safe_id(glossary_id):
+        logger.warning("Rejected unsafe glossary id in update_glossary")
+        return None
     _ensure_dir()
     fpath = os.path.join(GLOSSARY_DIR, f"{glossary_id}.json")
     if not os.path.exists(fpath):
@@ -279,16 +285,17 @@ def update_glossary(glossary_id, name=None, entries=None):
     _atomic_write_json(fpath, data)
     return data
 
-
 def delete_glossary(glossary_id):
     """Delete a glossary."""
+    if not _is_safe_id(glossary_id):
+        logger.warning("Rejected unsafe glossary id in delete_glossary")
+        return False
     _ensure_dir()
     fpath = os.path.join(GLOSSARY_DIR, f"{glossary_id}.json")
     if not os.path.exists(fpath):
         return False
     os.remove(fpath)
     return True
-
 
 def get_entries_for_pair(source_lang, target_lang):
     """Get merged glossary entries for a language pair."""

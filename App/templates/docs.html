@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% if doc_title %}{{ doc_title }} — {% endif %}Live Translate Docs</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/docs.css" />
+</head>
+<body class="docs-body">
+  <header class="docs-topbar">
+    <a class="docs-brand" href="/"><span class="docs-logo">LT</span> Live Translate</a>
+    <a class="btn-secondary" href="/">&larr; Back to app</a>
+  </header>
+  <div class="docs-layout">
+    <nav class="docs-nav">
+      <h2>Documentation</h2>
+      {% for d in docs %}
+        <a href="/docs/{{ d.slug }}" class="{{ 'active' if d.slug == doc else '' }}">{{ d.title }}</a>
+      {% endfor %}
+    </nav>
+    <main class="docs-main">
+      {% if content %}
+        {{ content|safe }}
+      {% elif not_found %}
+        <h1>Document not found</h1>
+        <p>Please choose a document from the list on the left.</p>
+      {% else %}
+        <h1>Documentation &amp; Legal</h1>
+        <p>Select a document from the list on the left to read it, including our
+           Privacy Policy, Terms of Service, Acceptable Use Policy, Security
+           Policy, and License.</p>
+      {% endif %}
+    </main>
+  </div>
+</body>
+</html>
