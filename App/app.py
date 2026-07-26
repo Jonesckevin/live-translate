@@ -4,6 +4,8 @@ Flask backend with SocketIO for real-time communication.
 """
 
 import os
+import time
+import re
 import hmac
 import hashlib
 import json
@@ -11,10 +13,31 @@ import logging
 import socket
 import uuid
 import secrets
+import threading
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from functools import wraps
 import requests
+
+try:
+    import webauthn as _webauthn
+    from webauthn.helpers.structs import (
+        AuthenticatorSelectionCriteria,
+        ResidentKeyRequirement,
+        UserVerificationRequirement,
+        RegistrationCredential,
+        AuthenticatorAttestationResponse,
+        AuthenticationCredential,
+        AuthenticatorAssertionResponse,
+        AuthenticatorTransport,
+    )
+    from webauthn.helpers import (
+        base64url_to_bytes as _b64url_to_bytes,
+        bytes_to_base64url as _bytes_to_b64url,
+    )
+    PASSKEY_SUPPORT = True
+except ImportError:
+    PASSKEY_SUPPORT = False
 
 from flask import Flask, request, jsonify, render_template, send_from_directory, Response, g, has_request_context
 from flask_cors import CORS
@@ -172,6 +195,68 @@ def load_config():
         return {}
 
 config = load_config()
+
+# --- Passkey / WebAuthn config --------------------------------------------
+# RP_ID must match the hostname only (no port, no scheme). It is permanent —
+# changing it invalidates all existing passkeys.
+# ORIGIN is a comma-separated list. Supported values:
+#   localhost           → accept any http://localhost:PORT
+#   yarn                → accept any http(s)://yarn.<DOMAIN>[:<PORT>]
+#   https://example.com → accept that exact origin
+RP_ID = os.environ.get('RP_ID', 'localhost')
+RP_NAME = os.environ.get('RP_NAME', config.get('app', {}).get('title', 'Live Translate'))
+
+_PK_EXACT_ORIGINS: set = set()
+_PK_ALLOW_LOCALHOST = False
+_PK_ALLOW_YARN = False
+
+for _tok in os.environ.get('ORIGIN', 'localhost').split(','):
+    _tok = _tok.strip()
+    if _tok.lower() == 'localhost':
+        _PK_ALLOW_LOCALHOST = True
+    elif _tok.lower() == 'yarn':
+        _PK_ALLOW_YARN = True
+    elif _tok:
+        _PK_EXACT_ORIGINS.add(_tok)
+
+_RE_LOCALHOST = re.compile(r'^https?://localhost(:\d+)?$')
+_RE_YARN = re.compile(r'^https?://yarn\.[a-zA-Z0-9.-]+(:\d+)?$')
+
+
+def _passkey_origin() -> str:
+    """Resolve the expected WebAuthn origin from the incoming request Origin header."""
+    origin = (request.headers.get('Origin') or '').strip()
+    if origin:
+        if _PK_ALLOW_LOCALHOST and _RE_LOCALHOST.match(origin):
+            return origin
+        if _PK_ALLOW_YARN and _RE_YARN.match(origin):
+            return origin
+        if origin in _PK_EXACT_ORIGINS:
+            return origin
+    return next(iter(_PK_EXACT_ORIGINS), 'http://localhost')
+
+_pk_challenges: dict = {}
+_pk_lock = threading.Lock()
+
+
+def _pk_put(data: dict) -> str:
+    cid = secrets.token_urlsafe(16)
+    now = time.time()
+    with _pk_lock:
+        stale = [k for k, v in list(_pk_challenges.items()) if v['_exp'] < now]
+        for k in stale:
+            del _pk_challenges[k]
+        _pk_challenges[cid] = {**data, '_exp': now + 300}
+    return cid
+
+
+def _pk_take(cid: str):
+    with _pk_lock:
+        c = _pk_challenges.pop(cid, None)
+    if not c or c.get('_exp', 0) < time.time():
+        return None
+    return c
+
 
 def mask_api_key(key):
     if not key or len(key) < 10:
@@ -447,7 +532,199 @@ def auth_guest():
     analytics.incr('logins')
     return jsonify({'user': user, 'token': token}), 201
 
-@app.route('/api/translate', methods=['POST'])
+
+# ============================================================================
+# Passkey (WebAuthn) routes
+# ============================================================================
+
+@app.route('/auth/passkey/register/options', methods=['POST'])
+def passkey_register_options():
+    if not ALLOW_AUTH or not ALLOW_USER_REGISTRATION:
+        return jsonify({'error': 'Registration is disabled'}), 404
+    if not PASSKEY_SUPPORT:
+        return jsonify({'error': 'Passkey support not available on this server'}), 501
+    ip = auth_manager.client_ip()
+    if not auth_manager.register_rate_ok(ip):
+        return jsonify({'error': 'Too many registration attempts, please try again later'}), 429
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    email = (data.get('email') or '').strip() or None
+    err = user_manager.validate_username(username)
+    if err:
+        return jsonify({'error': err}), 400
+    existing = user_manager.get_user_by_username(username)
+    if existing:
+        uid_str = existing['user_id']
+        is_new_user = False
+    else:
+        uid_str = str(uuid.uuid4())
+        is_new_user = True
+    user_id_bytes = bytes.fromhex(uid_str.replace('-', ''))
+    options = _webauthn.generate_registration_options(
+        rp_id=RP_ID,
+        rp_name=RP_NAME,
+        user_id=user_id_bytes,
+        user_name=username,
+        user_display_name=username,
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            resident_key=ResidentKeyRequirement.PREFERRED,
+            user_verification=UserVerificationRequirement.PREFERRED,
+        ),
+    )
+    cid = _pk_put({'challenge': options.challenge, 'username': username,
+                   'email': email, 'uid': uid_str, 'is_new_user': is_new_user})
+    return jsonify({'cid': cid, 'options': json.loads(_webauthn.options_to_json(options))})
+
+
+@app.route('/auth/passkey/register/verify', methods=['POST'])
+def passkey_register_verify():
+    if not ALLOW_AUTH or not ALLOW_USER_REGISTRATION:
+        return jsonify({'error': 'Registration is disabled'}), 404
+    if not PASSKEY_SUPPORT:
+        return jsonify({'error': 'Passkey support not available on this server'}), 501
+    ip = auth_manager.client_ip()
+    data = request.get_json(silent=True) or {}
+    c = _pk_take(data.get('cid'))
+    if not c:
+        return jsonify({'error': 'Challenge expired — please try again'}), 400
+    cred_data = data.get('credential')
+    if not cred_data or not isinstance(cred_data, dict):
+        return jsonify({'error': 'Missing credential'}), 400
+    try:
+        resp = cred_data.get('response', {})
+        transports = []
+        for t in (resp.get('transports') or []):
+            try:
+                transports.append(AuthenticatorTransport(t))
+            except ValueError:
+                pass
+        cred = RegistrationCredential(
+            id=cred_data['id'],
+            raw_id=_b64url_to_bytes(cred_data['rawId']),
+            response=AuthenticatorAttestationResponse(
+                client_data_json=_b64url_to_bytes(resp['clientDataJSON']),
+                attestation_object=_b64url_to_bytes(resp['attestationObject']),
+                transports=transports,
+            ),
+        )
+    except Exception as exc:
+        app_logger.warning('Passkey register parse error: %s', exc)
+        return jsonify({'error': 'Invalid credential format'}), 400
+    try:
+        verification = _webauthn.verify_registration_response(
+            credential=cred,
+            expected_challenge=c['challenge'],
+            expected_rp_id=RP_ID,
+            expected_origin=_passkey_origin(),
+            require_user_verification=False,
+        )
+    except Exception as exc:
+        app_logger.warning('Passkey register verify error: %s', exc)
+        return jsonify({'error': 'Passkey verification failed: ' + str(exc)}), 400
+    cred_id = _bytes_to_b64url(verification.credential_id)
+    pub_key = _bytes_to_b64url(verification.credential_public_key)
+    sign_count = verification.sign_count
+    transports_list = [t.value if hasattr(t, 'value') else str(t) for t in transports]
+    if c['is_new_user']:
+        auth_manager.record_register_attempt(ip)
+        try:
+            role = 'admin' if user_manager.count_users() == 0 else 'user'
+            user = user_manager.create_user_passwordless(
+                c['username'], c.get('email'), role=role, forced_id=c['uid'])
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+    else:
+        row = user_manager.get_user_by_id(c['uid'])
+        if not row:
+            return jsonify({'error': 'User not found'}), 404
+        user = user_manager._public(row)
+    try:
+        user_manager.add_passkey(user['user_id'], cred_id, pub_key, sign_count, transports_list)
+    except Exception as exc:
+        app_logger.error('Passkey store error: %s', exc)
+        return jsonify({'error': 'Failed to store passkey'}), 500
+    token, _exp = auth_manager.create_access_token(
+        user['user_id'], user['role'], user['username'])
+    app_logger.info("AUTH: passkey registered for '%s'", user['username'])
+    return jsonify({'user': user, 'token': token}), (201 if c['is_new_user'] else 200)
+
+
+@app.route('/auth/passkey/login/options', methods=['POST'])
+def passkey_login_options():
+    if not ALLOW_AUTH:
+        return jsonify({'error': 'Authentication is disabled'}), 404
+    if not PASSKEY_SUPPORT:
+        return jsonify({'error': 'Passkey support not available on this server'}), 501
+    options = _webauthn.generate_authentication_options(
+        rp_id=RP_ID,
+        user_verification=UserVerificationRequirement.PREFERRED,
+        allow_credentials=[],
+    )
+    cid = _pk_put({'challenge': options.challenge})
+    return jsonify({'cid': cid, 'options': json.loads(_webauthn.options_to_json(options))})
+
+
+@app.route('/auth/passkey/login/verify', methods=['POST'])
+def passkey_login_verify():
+    if not ALLOW_AUTH:
+        return jsonify({'error': 'Authentication is disabled'}), 404
+    if not PASSKEY_SUPPORT:
+        return jsonify({'error': 'Passkey support not available on this server'}), 501
+    ip = auth_manager.client_ip()
+    if not auth_manager.login_rate_ok(ip):
+        return jsonify({'error': 'Too many login attempts, please try again later'}), 429
+    data = request.get_json(silent=True) or {}
+    c = _pk_take(data.get('cid'))
+    if not c:
+        return jsonify({'error': 'Challenge expired — please try again'}), 400
+    cred_data = data.get('credential')
+    if not cred_data or not isinstance(cred_data, dict):
+        return jsonify({'error': 'Missing credential'}), 400
+    passkey = user_manager.get_passkey(cred_data.get('id'))
+    if not passkey:
+        return jsonify({'error': 'Unknown passkey — please register first'}), 404
+    try:
+        resp = cred_data.get('response', {})
+        cred = AuthenticationCredential(
+            id=cred_data['id'],
+            raw_id=_b64url_to_bytes(cred_data['rawId']),
+            response=AuthenticatorAssertionResponse(
+                client_data_json=_b64url_to_bytes(resp['clientDataJSON']),
+                authenticator_data=_b64url_to_bytes(resp['authenticatorData']),
+                signature=_b64url_to_bytes(resp['signature']),
+                user_handle=_b64url_to_bytes(resp['userHandle']) if resp.get('userHandle') else None,
+            ),
+        )
+    except Exception as exc:
+        app_logger.warning('Passkey login parse error: %s', exc)
+        return jsonify({'error': 'Invalid credential format'}), 400
+    try:
+        verification = _webauthn.verify_authentication_response(
+            credential=cred,
+            expected_challenge=c['challenge'],
+            expected_rp_id=RP_ID,
+            expected_origin=_passkey_origin(),
+            credential_public_key=_b64url_to_bytes(passkey['public_key']),
+            credential_current_sign_count=passkey['sign_count'],
+            require_user_verification=False,
+        )
+    except Exception as exc:
+        auth_manager.record_login_failure(ip)
+        app_logger.warning('Passkey login verify error: %s', exc)
+        return jsonify({'error': 'Passkey authentication failed'}), 401
+    user_manager.update_passkey_sign_count(passkey['cred_id'], verification.new_sign_count)
+    row = user_manager.get_user_by_id(passkey['user_id'])
+    if not row:
+        return jsonify({'error': 'User not found'}), 404
+    user = user_manager._public(row)
+    if user['status'] != 'active':
+        return jsonify({'error': 'Account is not active'}), 403
+    auth_manager.reset_login_attempts(ip)
+    token, _exp = auth_manager.create_access_token(
+        user['user_id'], user['role'], user['username'])
+    app_logger.info("AUTH: passkey login '%s'", user['username'])
+    analytics.incr('logins')
+    return jsonify({'user': user, 'token': token})
 def translate_text():
     data = request.get_json()
     if not data or not data.get('text'):

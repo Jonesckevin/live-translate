@@ -137,6 +137,102 @@
       }).catch(function () { showError('Network error, please try again'); });
   }
 
+  // --- WebAuthn / Passkey helpers -------------------------------------------
+
+  function webauthnOK() {
+    return !!(window.PublicKeyCredential && navigator.credentials);
+  }
+
+  var _bufToB64u = function (buf) {
+    return btoa(String.fromCharCode.apply(null, new Uint8Array(buf)))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+  var _b64uToBuf = function (s) {
+    return Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')),
+      function (c) { return c.charCodeAt(0); }).buffer;
+  };
+
+  function _credToJSON(cred) {
+    var r = cred.response;
+    var out = {
+      id: cred.id,
+      rawId: _bufToB64u(cred.rawId),
+      type: cred.type,
+      authenticatorAttachment: cred.authenticatorAttachment || null,
+      clientExtensionResults: (cred.getClientExtensionResults ? cred.getClientExtensionResults() : {}),
+      response: { clientDataJSON: _bufToB64u(r.clientDataJSON) }
+    };
+    if (r.attestationObject) {
+      out.response.attestationObject = _bufToB64u(r.attestationObject);
+      out.response.transports = r.getTransports ? r.getTransports() : ['internal'];
+    }
+    if (r.authenticatorData) {
+      out.response.authenticatorData = _bufToB64u(r.authenticatorData);
+      out.response.signature = _bufToB64u(r.signature);
+      out.response.userHandle = r.userHandle ? _bufToB64u(r.userHandle) : null;
+    }
+    return out;
+  }
+
+  function _toCreationOpts(o) {
+    o.challenge = _b64uToBuf(o.challenge);
+    if (o.user && o.user.id) o.user.id = _b64uToBuf(o.user.id);
+    (o.excludeCredentials || []).forEach(function (c) { c.id = _b64uToBuf(c.id); });
+    return o;
+  }
+
+  function _toRequestOpts(o) {
+    o.challenge = _b64uToBuf(o.challenge);
+    (o.allowCredentials || []).forEach(function (c) { c.id = _b64uToBuf(c.id); });
+    return o;
+  }
+
+  function passkeyRegister(username, email) {
+    return _fetch('/auth/passkey/register/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username, email: email || '' })
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { throw new Error(res.d.error || 'Options request failed'); }
+        var cid = res.d.cid;
+        return navigator.credentials.create({ publicKey: _toCreationOpts(res.d.options) })
+          .then(function (cred) {
+            return _fetch('/auth/passkey/register/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ cid: cid, credential: _credToJSON(cred) })
+            }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); });
+          }).then(function (res) {
+            if (!res.ok) { throw new Error(res.d.error || 'Verification failed'); }
+            return res.d;
+          });
+      });
+  }
+
+  function passkeyLogin() {
+    return _fetch('/auth/passkey/login/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) { throw new Error(res.d.error || 'Options request failed'); }
+        var cid = res.d.cid;
+        return navigator.credentials.get({ publicKey: _toRequestOpts(res.d.options) })
+          .then(function (cred) {
+            return _fetch('/auth/passkey/login/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ cid: cid, credential: _credToJSON(cred) })
+            }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); });
+          }).then(function (res) {
+            if (!res.ok) { throw new Error(res.d.error || 'Authentication failed'); }
+            return res.d;
+          });
+      });
+  }
+
   
   function buildModal() {
     var registrationEnabled = cfg.registration_enabled;
@@ -182,7 +278,58 @@
     ]);
     registerForm.style.display = 'none';
 
-    
+    // Passkey sections (only rendered when browser supports WebAuthn)
+    var passkeySignInSection = null;
+    var passkeyRegSection = null;
+    if (webauthnOK()) {
+      var pkSignInBtn = h('button', {
+        type: 'button', class: 'auth-guest-btn', onclick: function () {
+          showError('');
+          pkSignInBtn.disabled = true;
+          pkSignInBtn.textContent = 'Waiting for passkey\u2026';
+          passkeyLogin().then(function (res) {
+            onAuthenticated(res.token, true);
+          }).catch(function (err) {
+            pkSignInBtn.disabled = false;
+            pkSignInBtn.textContent = '\uD83D\uDD11 Sign in with Passkey';
+            if (err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
+              showError(err.message || 'Passkey sign-in failed');
+            }
+          });
+        }
+      }, ['\uD83D\uDD11 Sign in with Passkey']);
+      passkeySignInSection = h('div', { class: 'auth-passkey-section' }, [
+        h('div', { class: 'auth-divider' }, ['or']),
+        pkSignInBtn
+      ]);
+      if (registrationEnabled) {
+        var pkRegBtn = h('button', {
+          type: 'button', class: 'auth-guest-btn', onclick: function () {
+            var uname = rUser.value.trim();
+            if (!uname) { showError('Please enter a username first'); return; }
+            showError('');
+            pkRegBtn.disabled = true;
+            pkRegBtn.textContent = 'Waiting for passkey\u2026';
+            passkeyRegister(uname, rEmail.value.trim()).then(function (res) {
+              onAuthenticated(res.token, true);
+            }).catch(function (err) {
+              pkRegBtn.disabled = false;
+              pkRegBtn.textContent = '\uD83D\uDD11 Register with Passkey';
+              if (err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
+                showError(err.message || 'Passkey registration failed');
+              }
+            });
+          }
+        }, ['\uD83D\uDD11 Register with Passkey']);
+        passkeyRegSection = h('div', { class: 'auth-passkey-section' }, [
+          h('div', { class: 'auth-divider' }, ['or, skip the password']),
+          h('p', { class: 'auth-guest-note' }, ['Use the username (and optional email) above, then confirm with your device biometrics or PIN. No password needed.']),
+          pkRegBtn
+        ]);
+        passkeyRegSection.style.display = 'none';
+      }
+    }
+
     var tabSignIn   = h('button', { class: 'auth-tab active', type: 'button', onclick: function () { modalSetTab('signin'); } }, ['Sign In']);
     var tabRegister = h('button', { class: 'auth-tab', type: 'button', onclick: function () { modalSetTab('register'); } }, ['Register']);
     if (!registrationEnabled) tabRegister.style.display = 'none';
@@ -193,6 +340,8 @@
       tabRegister.classList.toggle('active', reg);
       signInForm.style.display  = reg ? 'none' : '';
       registerForm.style.display = reg ? '' : 'none';
+      if (passkeySignInSection) passkeySignInSection.style.display = reg ? 'none' : '';
+      if (passkeyRegSection) passkeyRegSection.style.display = reg ? '' : 'none';
       showError('');
     };
 
@@ -240,7 +389,10 @@
     if (registrationEnabled) {
       bodyParts.push(h('div', { class: 'auth-tabs' }, [tabSignIn, tabRegister]));
     }
-    bodyParts.push(errorBox, signInForm, registerForm);
+    bodyParts.push(errorBox, signInForm);
+    if (passkeySignInSection) bodyParts.push(passkeySignInSection);
+    bodyParts.push(registerForm);
+    if (passkeyRegSection) bodyParts.push(passkeyRegSection);
     if (guestSection) bodyParts.push(guestSection);
 
     var body = h('div', { class: 'app-modal-body auth-body' }, bodyParts);

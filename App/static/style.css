@@ -2510,6 +2510,9 @@ body.auth-gated .toast-container {
     color: var(--accent-primary);
 }
 .auth-guest-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.auth-passkey-section { margin-top: 14px; }
+.auth-divider { display: flex; align-items: center; gap: 10px; color: var(--text-secondary); font-size: 12px; margin-bottom: 10px; }
+.auth-divider::before, .auth-divider::after { content: ''; flex: 1; border-top: 1px solid var(--border-color); }
 
 .auth-chip-guest { color: var(--text-secondary); font-style: italic; }
 .auth-chip-guest:hover { color: var(--accent-secondary); }

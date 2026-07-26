@@ -25,6 +25,14 @@ services:
       REGISTER_RATE_MAX: ${REGISTER_RATE_MAX:-3}                  # Max registration attempts per IP
       REGISTER_RATE_WINDOW: ${REGISTER_RATE_WINDOW:-3600}          # Registration rate limit window in seconds
       SHARE_CODE_TTL: ${SHARE_CODE_TTL:-86400}                    # Share link expiration time in seconds
+
+      # ========== Passkey / WebAuthn ==========
+      # RP_ID must match the exact hostname users visit (no port, no scheme).
+      # ORIGIN must match the full browser origin (scheme + host + optional port).
+      # For a custom domain: RP_ID=example.com  ORIGIN=https://example.com
+      RP_ID: ${RP_ID:-localhost}
+      ORIGIN: ${ORIGIN:-http://localhost:9015}
+      # RP_NAME: ${RP_NAME:-Live Translate}
       
       # ========== Speech-to-Text (Whisper) ==========
       WHISPER_ENABLED: ${WHISPER_ENABLED:-true}                   # Enable audio transcription feature
@@ -93,3 +101,8 @@ services:
       - ${DATA_DIR:-./data}/cache/libretranslate-local:/root/.local
       - ${DATA_DIR:-./data}/session-icons:/app/session-icons
     restart: unless-stopped
+    # ── Hardening: block privilege escalation via setuid binaries. Safe here because
+    #    entrypoint.sh drops root -> appuser with setpriv (a privilege *reduction*,
+    #    which no-new-privileges permits). ──
+    security_opt:
+      - no-new-privileges:true

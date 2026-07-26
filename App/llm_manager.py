@@ -527,7 +527,7 @@ class LLMManager:
         
         system_prompt = f"""You are an expert translator.
 
-**Your Task:** Translate the following text to {target_language}.
+**Your Task:** Translate the following text to {target_language} using accurate and professional setting style writing.
 
 **Critical Instructions:**
 {chr(10).join(instructions)}

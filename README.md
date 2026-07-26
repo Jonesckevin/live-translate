@@ -55,7 +55,8 @@ docker run --name live-translate --restart unless-stopped -p 9015:5000 -v ./data
 	-e SECRETS='$(openssl rand -hex 32)' \
 	-e REQUIRE_SECRETS=true \
 	-e LOGS_ACCESS_TOKEN= \
-	-e ALLOW_CLIENT_API_KEYS=true jonesckevin/live-translate:latest
+	-e ALLOW_CLIENT_API_KEYS=true \
+    jonesckevin/live-translate:latest
 ```
 
 Open **http://localhost:9015** in your browser.

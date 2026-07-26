@@ -82,6 +82,19 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS passkeys (
+                cred_id      TEXT PRIMARY KEY,
+                user_id      TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                public_key   TEXT NOT NULL,
+                sign_count   INTEGER NOT NULL DEFAULT 0,
+                transports   TEXT NOT NULL DEFAULT '[]',
+                created_at   TEXT NOT NULL,
+                last_used_at TEXT
+            )
+            """
+        )
         conn.commit()
     logger.info("User database initialized at %s", USERS_DB)
 
@@ -367,3 +380,98 @@ def save_user_settings(user_id, settings):
         )
         conn.commit()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Passkeys (WebAuthn credentials)
+# ---------------------------------------------------------------------------
+
+def add_passkey(user_id, cred_id, public_key_b64url, sign_count, transports):
+    """Store a new WebAuthn credential for a user."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _write_lock, _connect() as conn:
+        conn.execute(
+            'INSERT INTO passkeys (cred_id, user_id, public_key, sign_count, transports, created_at)'
+            ' VALUES (?,?,?,?,?,?)',
+            (cred_id, user_id, public_key_b64url, int(sign_count),
+             json.dumps(list(transports)), now),
+        )
+        conn.commit()
+
+
+def get_passkey(cred_id):
+    """Return a passkey dict or None."""
+    if not cred_id:
+        return None
+    with _connect() as conn:
+        row = conn.execute('SELECT * FROM passkeys WHERE cred_id = ?', (cred_id,)).fetchone()
+    if not row:
+        return None
+    return {
+        'cred_id': row['cred_id'],
+        'user_id': row['user_id'],
+        'public_key': row['public_key'],
+        'sign_count': row['sign_count'],
+        'transports': json.loads(row['transports'] or '[]'),
+    }
+
+
+def update_passkey_sign_count(cred_id, new_count):
+    """Update sign counter and last-used timestamp after a successful assertion."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _write_lock, _connect() as conn:
+        conn.execute(
+            'UPDATE passkeys SET sign_count = ?, last_used_at = ? WHERE cred_id = ?',
+            (int(new_count), now, cred_id),
+        )
+        conn.commit()
+
+
+def list_user_passkeys(user_id):
+    """Return passkey summaries for a user (no public key)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            'SELECT cred_id, created_at, last_used_at, transports'
+            ' FROM passkeys WHERE user_id = ? ORDER BY created_at',
+            (user_id,),
+        ).fetchall()
+    return [
+        {
+            'cred_id': r['cred_id'],
+            'created_at': r['created_at'],
+            'last_used_at': r['last_used_at'],
+            'transports': json.loads(r['transports'] or '[]'),
+        }
+        for r in rows
+    ]
+
+
+def create_user_passwordless(username, email=None, role='user', forced_id=None):
+    """Create a user with an unusable password hash (passkey-only account)."""
+    username = (username or '').strip()
+    err = validate_username(username)
+    if err:
+        raise ValueError(err)
+    if role not in VALID_ROLES:
+        role = 'user'
+    now = datetime.now(timezone.utc).isoformat()
+    user_id = forced_id or str(uuid.uuid4())
+    unusable_hash = '!!' + bcrypt.hashpw(uuid.uuid4().bytes, bcrypt.gensalt()).decode('utf-8')
+    with _write_lock, _connect() as conn:
+        try:
+            conn.execute(
+                'INSERT INTO users'
+                ' (user_id, username, email, password_hash, role, status, created_at, updated_at)'
+                ' VALUES (?,?,?,?,?,?,?,?)',
+                (user_id, username, (email or '').strip() or None,
+                 unusable_hash, role, 'active', now, now),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            raise ValueError('Username already exists')
+    logger.info("Created passwordless user '%s' (role=%s)", username, role)
+    return {
+        'user_id': user_id, 'username': username,
+        'email': (email or '').strip() or None,
+        'role': role, 'status': 'active', 'created_at': now, 'updated_at': now,
+    }
