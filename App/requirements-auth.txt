@@ -1,7 +1,9 @@
 # Additional runtime dependencies (auth + docs rendering).
 # Installed in a dedicated Docker layer AFTER the Whisper model download so that
 # adding or bumping these does not invalidate the cached (multi-GB) model layer.
-PyJWT==2.10.1
+# PyJWT>=2.13.0: fixes CVE-2026-32597, CVE-2026-48526
+PyJWT>=2.13.0
 bcrypt==4.2.1
 markdown==3.7
-cryptography==43.0.3
+# cryptography>=48.0.1: fixes CVE-2026-26007, GHSA-537c-gmf6-5ccf
+cryptography>=48.0.1

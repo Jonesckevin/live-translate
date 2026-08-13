@@ -6,14 +6,14 @@ services:
         PYTHON_BASE: ${PYTHON_BASE:-python:3.12-slim}
     container_name: live-translate
     environment:
-      # ========== Core Configuration ==========
-      DATA_DIR: ${DATA_DIR:-./data}                              # Directory for persistent data storage
-      DOCKER_PORT: ${DOCKER_PORT:-9015}                          # Port to expose the app (e.g., 9015 -> http://localhost:9015)
+      # == Core Configuration ==
+      DATA_DIR: ${DATA_DIR:-./data}                               # Directory for persistent data storage
+      DOCKER_PORT: ${DOCKER_PORT:-9015}                           # Port to expose the app (e.g., 9015 -> http://localhost:9015)
       LOG_DIR: ${LOG_DIR:-/data/logs}                             # Directory for application logs
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}                         # Maximum file upload size in MB
       OFFLINE_MODE: ${OFFLINE_MODE:-auto}                         # offline|online|auto - online requires internet, auto detects
       
-      # ========== Authentication & User Management ==========
+      ## == Authentication & User Management ==
       ALLOW_AUTH: ${ALLOW_AUTH:-true}                             # Enable/disable authentication system
       REQUIRE_AUTH: ${REQUIRE_AUTH:-true}                         # Force authentication for all users (set false for public access)
       ALLOW_USER_REGISTRATION: ${ALLOW_USER_REGISTRATION:-true}   # Allow new users to register accounts
@@ -23,10 +23,10 @@ services:
       LOGIN_RATE_MAX: ${LOGIN_RATE_MAX:-5}                        # Max login attempts before rate limit
       LOGIN_RATE_WINDOW: ${LOGIN_RATE_WINDOW:-900}                # Rate limit window in seconds (900 = 15 min)
       REGISTER_RATE_MAX: ${REGISTER_RATE_MAX:-3}                  # Max registration attempts per IP
-      REGISTER_RATE_WINDOW: ${REGISTER_RATE_WINDOW:-3600}          # Registration rate limit window in seconds
+      REGISTER_RATE_WINDOW: ${REGISTER_RATE_WINDOW:-3600}         # Registration rate limit window in seconds
       SHARE_CODE_TTL: ${SHARE_CODE_TTL:-86400}                    # Share link expiration time in seconds
 
-      # ========== Passkey / WebAuthn ==========
+      # == Passkey / WebAuthn ==
       # RP_ID must match the exact hostname users visit (no port, no scheme).
       # ORIGIN must match the full browser origin (scheme + host + optional port).
       # For a custom domain: RP_ID=example.com  ORIGIN=https://example.com
@@ -34,75 +34,68 @@ services:
       ORIGIN: ${ORIGIN:-http://localhost:9015}
       # RP_NAME: ${RP_NAME:-Live Translate}
       
-      # ========== Speech-to-Text (Whisper) ==========
-      WHISPER_ENABLED: ${WHISPER_ENABLED:-true}                   # Enable audio transcription feature
-      WHISPER_MODEL: ${WHISPER_MODEL:-tiny}                        # Model size: tiny|base|small|medium|large (larger = more accurate, slower)
-      WHISPER_USE_GPU: ${WHISPER_USE_GPU:-false}                   # Use GPU for faster transcription (requires NVIDIA CUDA)
-      WHISPER_MODEL_DIR: ${WHISPER_MODEL_DIR:-/data/whisper-model} # Cache directory for downloaded models
+      ## == Speech-to-Text (Whisper) ==
+      WHISPER_ENABLED: ${WHISPER_ENABLED:-true}                     # Enable audio transcription feature
+      WHISPER_MODEL: ${WHISPER_MODEL:-tiny}                         # Model size: tiny|base|small|medium|large (larger = more accurate, slower)
+      WHISPER_USE_GPU: ${WHISPER_USE_GPU:-false}                    # Use GPU for faster transcription (requires NVIDIA CUDA)
+      WHISPER_MODEL_DIR: ${WHISPER_MODEL_DIR:-/data/whisper-model}  # Cache directory for downloaded models
       WHISPER_PRELOAD_ON_STARTUP: ${WHISPER_PRELOAD_ON_STARTUP:-true} # Pre-load model on container start (faster first use)
       
-      # ========== Translation Engine ==========
+      ## == Translation Engine ==
       LIBRETRANSLATE_LOCAL_ENABLED: ${LIBRETRANSLATE_LOCAL_ENABLED:-true} # Use local LibreTranslate (offline, slower) vs cloud API
       LIBRETRANSLATE_LOCAL_URL: ${LIBRETRANSLATE_LOCAL_URL:-http://127.0.0.1:5001} # Local translation service URL
       LIBRETRANSLATE_SERVER_URL: ${LIBRETRANSLATE_SERVER_URL:-http://127.0.0.1:5001} # Fallback translation service URL
       
-      # ========== LLM Providers (Optional) ==========
-      OLLAMA_HOST: ${OLLAMA_HOST:-}                               # Ollama API endpoint (e.g., http://ollama:11434)
-      LMSTUDIO_HOST: ${LMSTUDIO_HOST:-}                           # LM Studio API endpoint (e.g., http://lmstudio:1234)
+      ## == Logging & Analytics ==
+      LOG_SESSIONS: ${LOG_SESSIONS:-true}                           # Log user session activity
+      LOG_TRANSLATIONS: ${LOG_TRANSLATIONS:-true}                   # Log all translations performed
+      ENABLE_SERVER_ANALYTICS: ${ENABLE_SERVER_ANALYTICS:-true}     # Enable server-side usage analytics
+      GOOGLE_ANALYTICS_KEY: ${GOOGLE_ANALYTICS_KEY:-}               # Google Analytics tracking ID (optional)
       
-      # ========== Logging & Analytics ==========
-      LOG_SESSIONS: ${LOG_SESSIONS:-true}                          # Log user session activity
-      LOG_TRANSLATIONS: ${LOG_TRANSLATIONS:-true}                  # Log all translations performed
-      ENABLE_SERVER_ANALYTICS: ${ENABLE_SERVER_ANALYTICS:-true}    # Enable server-side usage analytics
-      GOOGLE_ANALYTICS_KEY: ${GOOGLE_ANALYTICS_KEY:-G-2X30VVLY7J}  # Google Analytics tracking ID (optional)
-      
-      # ========== Cloud LLM API Keys (SENSITIVE - set in Portainer/environment file) ==========
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}                         # OpenAI API key for GPT models
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}                   # Anthropic API key for Claude
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}                          # Google Gemini API key
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}                      # DeepSeek API key
-      COHERE_API_KEY: ${COHERE_API_KEY:-}                          # Cohere API key
-      GROQ_API_KEY: ${GROQ_API_KEY:-}                              # Groq API key for fast inference
-      GROK_API_KEY: ${GROK_API_KEY:-}                              # Grok API key
-      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}                        # Mistral API key
-      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}                  # Perplexity API key
-      
-      # ========== Security & Access Control ==========
+      ## == Cloud LLM API Keys (SENSITIVE - set in Portainer/environment file) ==
+      #OPENAI_API_KEY: ${OPENAI_API_KEY:-}                          # OpenAI API key for GPT models
+      #ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}                    # Anthropic API key for Claude
+      #GEMINI_API_KEY: ${GEMINI_API_KEY:-}                          # Google Gemini API key
+      #DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}                      # DeepSeek API key
+      #COHERE_API_KEY: ${COHERE_API_KEY:-}                          # Cohere API key
+      #GROQ_API_KEY: ${GROQ_API_KEY:-}                              # Groq API key for fast inference
+      #GROK_API_KEY: ${GROK_API_KEY:-}                              # Grok API key
+      #MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}                        # Mistral API key
+      #PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}                  # Perplexity API key
+
+      ## == LLM Providers (Optional) ==
+      #OLLAMA_HOST: ${OLLAMA_HOST:-}                                # Ollama API endpoint (e.g., http://ollama:11434)
+      #LMSTUDIO_HOST: ${LMSTUDIO_HOST:-}                            # LM Studio API endpoint (e.g., http://lmstudio:1234)
+
+      ## == Security & Access Control ==
       SECRET_KEY: ${SECRET_KEY:-}                                  # Application secret key for sessions (generate if empty)
       SECRETS: ${SECRETS:-}                                        # Comma-separated API access tokens for backend
       REQUIRE_SECRETS: ${REQUIRE_SECRETS:-true}                    # Require API tokens for programmatic access
       LOGS_ACCESS_TOKEN: ${LOGS_ACCESS_TOKEN:-}                    # Token to access logs endpoint
       
-      # ========== Network & Proxy Configuration ==========
+      ## == Network & Proxy Configuration ==
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:9015,http://127.0.0.1:9015} # Comma-separated allowed origin URLs
       TRUST_PROXY: ${TRUST_PROXY:-false}                           # Trust X-Forwarded-For header (enable if behind proxy)
       
-      # ========== WebSocket (Socket.io) Configuration ==========
+      ## == WebSocket (Socket.io) Configuration ==
       SOCKETIO_ASYNC_HANDLERS: ${SOCKETIO_ASYNC_HANDLERS:-true}    # Use async event handlers for better performance
       SOCKETIO_CORS_CREDENTIALS: ${SOCKETIO_CORS_CREDENTIALS:-true} # Allow cookies in CORS requests
       SOCKETIO_PING_TIMEOUT: ${SOCKETIO_PING_TIMEOUT:-60}          # Client ping timeout in seconds
       SOCKETIO_PING_INTERVAL: ${SOCKETIO_PING_INTERVAL:-25}        # Server ping interval in seconds
       
-      # ========== Feature Flags ==========
+      ## == Feature Flags ==
       ALLOW_CLIENT_API_KEYS: ${ALLOW_CLIENT_API_KEYS:-false}       # Allow users to provide their own API keys
       
-      # ========== Startup Behavior ==========
-      STARTUP_FAIL_ON_CHECKS: ${STARTUP_FAIL_ON_CHECKS:-false}     # Fail startup if health checks don't pass
-      
-      # ========== Docker Build Configuration ==========
+      ## == Docker Build Configuration ==
       PYTHON_BASE: ${PYTHON_BASE:-python:3.12-slim}                # Python base image (3.11-slim, 3.12-slim, etc.)
     ports:
       - "${DOCKER_PORT:-9015}:5000"
     volumes:
       - ${DATA_DIR:-./data}:/data
       - ${DATA_DIR:-./data}/whisper-model:/data/whisper-model
-      - ${DATA_DIR:-./data}/cache/huggingface:/root/.cache/huggingface
-      - ${DATA_DIR:-./data}/cache/pip:/root/.cache/pip
-      - ${DATA_DIR:-./data}/cache/libretranslate-local:/root/.local
+      - ${DATA_DIR:-./data}/cache/huggingface:/data/cache/huggingface
+      - ${DATA_DIR:-./data}/cache/libretranslate-local:/data/.local
       - ${DATA_DIR:-./data}/session-icons:/app/session-icons
     restart: unless-stopped
-    # ── Hardening: block privilege escalation via setuid binaries. Safe here because
-    #    entrypoint.sh drops root -> appuser with setpriv (a privilege *reduction*,
-    #    which no-new-privileges permits). ──
     security_opt:
       - no-new-privileges:true

@@ -11,7 +11,8 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir --prefix /install -r requirements.txt && \
     pip install --no-cache-dir --prefix /install -r requirements-auth.txt
 RUN python -m venv /opt/libretranslate-venv \
-    && /opt/libretranslate-venv/bin/pip install --no-cache-dir libretranslate==1.9.6
+    && /opt/libretranslate-venv/bin/pip install --no-cache-dir libretranslate==1.9.6 \
+    && /opt/libretranslate-venv/bin/pip install --no-cache-dir "waitress>=3.0.1"
 RUN LIBRE_SITE_PACKAGES=$(/opt/libretranslate-venv/bin/python -c "import site; print(site.getsitepackages()[0])") \
     && sed -i "s/language_target_fallback = languages\[1\] if len(languages) >= 2 else languages\[0\]/language_target_fallback = languages[1] if len(languages) >= 2 else (languages[0] if len(languages) >= 1 else 'en')/g" \
     "$LIBRE_SITE_PACKAGES/libretranslate/app.py"
@@ -29,6 +30,7 @@ RUN groupadd --gid 1000 appuser \
         /data/whisper-model /data/session-icons /data/cache/huggingface \
     && chmod +x /app/entrypoint.sh \
     && chown -R appuser:appuser /app /data /home/appuser
+USER appuser
 EXPOSE 5000
 ENV PYTHONUNBUFFERED=1
 ENV HOME=/data
@@ -59,6 +61,8 @@ ENV LOG_SESSIONS=false
 ENV LOG_TRANSLATIONS=false
 ENV ENABLE_SERVER_ANALYTICS=false
 ENV REQUIRE_SECRETS=true
+ENV REQUIRE_AUTH=true
+ENV ALLOW_AUTH=true
 ENV ALLOW_CLIENT_API_KEYS=true
 ENV STARTUP_FAIL_ON_CHECKS=false
 ENV TRUST_PROXY=false

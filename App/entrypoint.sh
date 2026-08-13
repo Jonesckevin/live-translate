@@ -1,8 +1,6 @@
 #!/bin/sh
 set -eu
 
-APP_USER="${APP_USER:-appuser}"
-
 # Generate SECRET_KEY and SECRETS if not provided
 if [ -z "${SECRET_KEY:-}" ]; then
   export SECRET_KEY=$(openssl rand -hex 32)
@@ -14,14 +12,8 @@ if [ -z "${SECRETS:-}" ]; then
   echo "Generated random SECRETS"
 fi
 
-if [ "$(id -u)" = "0" ]; then
-  mkdir -p /data/logs /data/sessions /data/glossaries /data/output /data/uploaded \
-    /data/session-icons /data/cache/huggingface /data/.local 2>/dev/null || true
-  chown -R "$APP_USER":"$APP_USER" /data 2>/dev/null || true
-
-  echo "Dropping privileges to '$APP_USER'"
-  exec setpriv --reuid="$APP_USER" --regid="$APP_USER" --init-groups "$0" "$@"
-fi
+mkdir -p /data/logs /data/sessions /data/glossaries /data/output /data/uploaded \
+  /data/session-icons /data/cache/huggingface /data/.local 2>/dev/null || true
 
 if [ "${LIBRETRANSLATE_LOCAL_ENABLED:-true}" = "true" ]; then
   echo "Starting embedded LibreTranslate at 127.0.0.1:5001"

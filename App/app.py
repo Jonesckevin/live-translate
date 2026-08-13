@@ -3,6 +3,10 @@ Live Translate - Real-time translation webapp with speech, text, and AI support.
 Flask backend with SocketIO for real-time communication.
 """
 
+# gevent monkey-patch must come before any other stdlib/network imports
+from gevent import monkey
+monkey.patch_all()
+
 import os
 import time
 import re
@@ -90,7 +94,7 @@ SOCKETIO_CORS_CREDENTIALS = os.environ.get('SOCKETIO_CORS_CREDENTIALS', 'true').
 socketio = SocketIO(
     app,
     cors_allowed_origins=_socketio_cors_origins,
-    async_mode='eventlet',
+    async_mode='gevent',
     ping_timeout=SOCKETIO_PING_TIMEOUT,
     ping_interval=SOCKETIO_PING_INTERVAL,
     logger=True,
@@ -997,8 +1001,7 @@ def _session_access_error(session_data, action, session_id):
             and session_data.get('join_password_hash')
             and not (uid and uid == session_data.get('owner_id'))
             and role != 'admin'):
-        provided = (request.headers.get('X-Join-Password', '')
-                    or request.args.get('join_password', ''))
+        provided = request.headers.get('X-Join-Password', '')
         if not _verify_session_password(provided, session_data.get('join_password_hash')):
             return jsonify({'error': 'Password required', 'requires_password': True}), 403
 

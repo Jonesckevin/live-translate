@@ -7,7 +7,6 @@ shown are defaults. Booleans accept `true`/`false`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PYTHON_BASE` | `python:3.11-slim` | Base image (build arg). Pin by digest in production. |
 | `LIBRETRANSLATE_LOCAL_ENABLED` | `true` | Run embedded LibreTranslate in-container. |
 | `LIBRETRANSLATE_LOCAL_URL` | `http://127.0.0.1:5001` | Embedded LibreTranslate URL. |
 | `LIBRETRANSLATE_SERVER_URL` | `http://libretranslate:5000` | External LibreTranslate URL (when local disabled). |
