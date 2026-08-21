@@ -47,6 +47,7 @@
                 <span class="toggle-label">✨ Auto-Correct</span>
             </label>
             <div id="authHeader" class="auth-header" style="display:none;"></div>
+            <button class="btn-secondary" id="openPresentationMode" title="Present the translated output on a fullscreen display for a wider audience">📺 Present</button>
             <button class="btn-secondary" id="openSettingsModal">⚙️ Settings</button>
         </div>
     </header>
@@ -402,6 +403,26 @@
             </a>
         </div>
     </footer>
+
+    
+    <div class="presentation-overlay" id="presentationOverlay" style="display:none;">
+        <div class="presentation-topbar">
+            <div class="presentation-topbar-left">
+                <span class="presentation-badge">📺 Presentation Mode</span>
+                <span class="presentation-panel-label">Show translation from</span>
+                <div class="presentation-panel-buttons" role="group" aria-label="Choose which translation to present">
+                    <button class="presentation-panel-btn active" id="presentationPanelLeft" data-panel="left">Left panel</button>
+                    <button class="presentation-panel-btn" id="presentationPanelRight" data-panel="right">Right panel</button>
+                </div>
+                <button class="btn-secondary presentation-mic-btn" id="presentationMicBtn" title="Enable the microphone">🎤 Enable Mic</button>
+            </div>
+            <button class="btn-secondary" id="presentationExit">✕ Exit</button>
+        </div>
+        <div class="presentation-content">
+            <div class="presentation-lang-label" id="presentationLangLabel">Translation</div>
+            <div class="presentation-text" id="presentationText">Waiting for translation...</div>
+        </div>
+    </div>
 
     
     <script src="/static/api-manager.js"></script>

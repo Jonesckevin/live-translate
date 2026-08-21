@@ -372,6 +372,7 @@
         initConversationTab();
         initSessionsTab();
         initSettingsTab();
+        initPresentationMode();
         startServiceStatusMonitor();
         
         await handleJoinCode();
@@ -1572,6 +1573,7 @@
         }
         bubble.classList.toggle('live', !!isLive);
         bubble.classList.toggle('is-translating', !!isTranslating);
+        mirrorToPresentation(side, text);
     }
 
     async function sendConvMessage(side) {
@@ -1743,6 +1745,7 @@
         bubble.appendChild(meta);
         container.appendChild(bubble);
         container.scrollTop = container.scrollHeight;
+        if (type === 'translated') mirrorToPresentation(side, text);
         return bubble;
     }
 
@@ -3332,6 +3335,7 @@
 
         button.disabled = false;
         button.title = `${baseLabel} (${nextState === 'active' ? 'Active' : 'Not active'})`;
+        refreshPresentationMicButton();
     }
 
     function summarizeProviderError(message) {
@@ -3406,6 +3410,135 @@
 
     function cap(str) {
         return str.charAt(0).toUpperCase() + str.slice(1);
+    }
+
+    
+    
+    
+    let presentationMode = { active: false, panel: 'left' };
+
+    function initPresentationMode() {
+        const openBtn = document.getElementById('openPresentationMode');
+        const exitBtn = document.getElementById('presentationExit');
+        const leftBtn = document.getElementById('presentationPanelLeft');
+        const rightBtn = document.getElementById('presentationPanelRight');
+        const micBtn = document.getElementById('presentationMicBtn');
+        if (!openBtn || !exitBtn || !leftBtn || !rightBtn) return;
+
+        openBtn.addEventListener('click', enterPresentationMode);
+        exitBtn.addEventListener('click', exitPresentationMode);
+        leftBtn.addEventListener('click', () => selectPresentationPanel('left'));
+        rightBtn.addEventListener('click', () => selectPresentationPanel('right'));
+        if (micBtn) micBtn.addEventListener('click', togglePresentationMic);
+        document.addEventListener('keydown', (e) => {
+            if (presentationMode.active && e.key === 'Escape') exitPresentationMode();
+        });
+    }
+
+    function enterPresentationMode() {
+        const overlay = document.getElementById('presentationOverlay');
+        if (!overlay) return;
+        presentationMode.active = true;
+        presentationMode.panel = getActivePresentationPanel();
+        overlay.style.display = 'flex';
+        document.body.classList.add('presentation-active');
+        updatePresentationPanelButtons();
+        updatePresentationLabel();
+        clearPresentationText();
+        refreshPresentationMicButton();
+        if (overlay.requestFullscreen) {
+            overlay.requestFullscreen().catch(() => {});
+        }
+    }
+
+    function getActivePresentationPanel() {
+        const rightBtn = document.getElementById('presentationPanelRight');
+        if (rightBtn && rightBtn.classList.contains('active')) return 'right';
+        return 'left';
+    }
+
+    function selectPresentationPanel(panel) {
+        presentationMode.panel = panel;
+        updatePresentationPanelButtons();
+        updatePresentationLabel();
+        clearPresentationText();
+        refreshPresentationMicButton();
+    }
+
+    function updatePresentationPanelButtons() {
+        const leftBtn = document.getElementById('presentationPanelLeft');
+        const rightBtn = document.getElementById('presentationPanelRight');
+        if (leftBtn) leftBtn.classList.toggle('active', presentationMode.panel === 'left');
+        if (rightBtn) rightBtn.classList.toggle('active', presentationMode.panel === 'right');
+    }
+
+    
+    
+    
+    function getPresentedSourceSide() {
+        return presentationMode.panel === 'left' ? 'right' : 'left';
+    }
+
+    function togglePresentationMic() {
+        const side = getPresentedSourceSide();
+        const controller = convMicControllers[side];
+        const inst = convSpeechInstances[side];
+        if (!controller || !inst) return;
+        if (inst.isListening) {
+            controller.stopListening('toggle');
+        } else {
+            controller.startListening('toggle');
+        }
+        refreshPresentationMicButton();
+    }
+
+    function refreshPresentationMicButton() {
+        if (!presentationMode.active) return;
+        const btn = document.getElementById('presentationMicBtn');
+        if (!btn) return;
+        const side = getPresentedSourceSide();
+        const inst = convSpeechInstances[side];
+        const active = !!(inst && inst.isListening);
+        btn.classList.toggle('active', active);
+        btn.textContent = active ? '🔇 Mute Mic' : '🎤 Enable Mic';
+        btn.title = active
+            ? `Mute the microphone (${cap(side)} panel)`
+            : `Enable the microphone (${cap(side)} panel)`;
+    }
+
+    function exitPresentationMode() {
+        const overlay = document.getElementById('presentationOverlay');
+        presentationMode.active = false;
+        if (overlay) overlay.style.display = 'none';
+        document.body.classList.remove('presentation-active');
+        if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+        }
+    }
+
+    function updatePresentationLabel() {
+        const label = document.getElementById('presentationLangLabel');
+        const panel = presentationMode.panel;
+        const langSel = document.getElementById(`conv${cap(panel)}Lang`);
+        const name = langSel && langSel.selectedOptions && langSel.selectedOptions[0]
+            ? langSel.selectedOptions[0].textContent
+            : (langSel ? langSel.value : '');
+        if (label) label.textContent = name ? `Translation → ${name}` : 'Translation';
+    }
+
+    function clearPresentationText() {
+        const el = document.getElementById('presentationText');
+        if (el) el.textContent = 'Waiting for translation...';
+    }
+
+    function mirrorToPresentation(side, text) {
+        if (!presentationMode.active || !text) return;
+        if (side !== presentationMode.panel) return;
+        const el = document.getElementById('presentationText');
+        if (!el) return;
+        el.textContent = text;
+        el.classList.add('updating');
+        setTimeout(() => el.classList.remove('updating'), 160);
     }
 
 })();

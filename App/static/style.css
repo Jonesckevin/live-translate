@@ -2715,3 +2715,113 @@ h3 {
     transform: translateY(-1px);
     box-shadow: var(--shadow-sm), 0 0 8px rgba(168, 85, 247, 0.2);
 }
+
+
+/* Presentation Mode */
+.presentation-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+    display: flex;
+    flex-direction: column;
+    background: radial-gradient(ellipse at center, var(--bg-tertiary) 0%, var(--bg-secondary) 70%);
+    color: var(--text-primary);
+}
+
+.presentation-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    padding: var(--spacing-md) var(--spacing-lg);
+    background: rgba(26, 26, 36, 0.85);
+    border-bottom: 1px solid var(--border-color);
+    backdrop-filter: blur(8px);
+}
+
+.presentation-topbar-left {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+    flex-wrap: wrap;
+}
+
+.presentation-badge {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--accent-secondary);
+}
+
+.presentation-panel-label {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.presentation-panel-buttons {
+    display: flex;
+    gap: var(--spacing-xs);
+}
+
+.presentation-panel-btn {
+    padding: 6px 14px;
+    font-size: 0.9rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.presentation-panel-btn:hover {
+    border-color: var(--accent-primary);
+    color: var(--text-primary);
+}
+
+.presentation-panel-btn.active {
+    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+    border-color: transparent;
+    color: #fff;
+    font-weight: 600;
+}
+
+.presentation-mic-btn.active {
+    background: linear-gradient(135deg, var(--error), #dc2626);
+    border-color: transparent;
+    color: #fff;
+    font-weight: 600;
+}
+
+.presentation-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: var(--spacing-xl);
+    text-align: center;
+    gap: var(--spacing-lg);
+}
+
+.presentation-lang-label {
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: var(--accent-secondary);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.presentation-text {
+    font-size: clamp(2.2rem, 6vw, 5.5rem);
+    font-weight: 700;
+    line-height: 1.25;
+    max-width: 90%;
+    color: var(--text-primary);
+    text-shadow: 0 0 30px var(--accent-glow);
+    word-wrap: break-word;
+    transition: opacity 0.15s ease;
+}
+
+.presentation-text.updating {
+    opacity: 0.55;
+}
