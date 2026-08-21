@@ -44,6 +44,7 @@ def _connect():
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA busy_timeout=5000')
+    conn.execute('PRAGMA foreign_keys=ON')
     return conn
 
 def init_db():
@@ -60,6 +61,7 @@ def init_db():
                 status        TEXT NOT NULL DEFAULT 'active',
                 is_guest      INTEGER NOT NULL DEFAULT 0,
                 expires_at    INTEGER,
+                token_version INTEGER NOT NULL DEFAULT 0,
                 created_at    TEXT NOT NULL,
                 updated_at    TEXT NOT NULL
             )
@@ -95,6 +97,11 @@ def init_db():
             )
             """
         )
+        # Migration: add token_version to pre-existing users tables so JWT
+        # revocation works on installs created before this column existed.
+        cols = [r['name'] for r in conn.execute('PRAGMA table_info(users)').fetchall()]
+        if 'token_version' not in cols:
+            conn.execute('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0')
         conn.commit()
     logger.info("User database initialized at %s", USERS_DB)
 
@@ -159,8 +166,13 @@ def get_user_by_id(user_id):
     with _connect() as conn:
         return conn.execute('SELECT * FROM users WHERE user_id = ?', (user_id,)).fetchone()
 
-def create_user(username, password, email=None, role='user'):
-    """Create a user. Raises ValueError on validation failure or duplicate name."""
+def create_user(username, password, email=None, role=None):
+    """Create a user. Raises ValueError on validation failure or duplicate name.
+
+    When role is None, the first registered non-guest user becomes admin. This
+    is decided atomically inside the write lock so concurrent registrations
+    cannot both become admin (no TOCTOU), and guest accounts don't count.
+    """
     username = (username or '').strip()
     err = validate_username(username)
     if err:
@@ -168,14 +180,17 @@ def create_user(username, password, email=None, role='user'):
     err = validate_password(password)
     if err:
         raise ValueError(err)
-    if role not in VALID_ROLES:
-        role = 'user'
 
     now = datetime.utcnow().isoformat() + 'Z'
     user_id = str(uuid.uuid4())
     password_hash = hash_password(password)
 
     with _write_lock, _connect() as conn:
+        if role is None:
+            existing = conn.execute('SELECT 1 FROM users WHERE is_guest = 0 LIMIT 1').fetchone()
+            role = 'admin' if existing is None else 'user'
+        elif role not in VALID_ROLES:
+            role = 'user'
         try:
             conn.execute(
                 'INSERT INTO users (user_id, username, email, password_hash, role, status, created_at, updated_at)'
@@ -233,11 +248,35 @@ def set_status(user_id, status):
             'UPDATE users SET status = ?, updated_at = ? WHERE user_id = ?', (status, now, user_id)
         )
         conn.commit()
+    # Banning/disabling invalidates all outstanding JWTs for the user.
+    if cur.rowcount > 0 and status in ('banned', 'disabled'):
+        bump_token_version(user_id)
     return cur.rowcount > 0
+
+def get_token_version(user_id):
+    """Return the user's current token_version (0 when unknown)."""
+    if not user_id:
+        return 0
+    with _connect() as conn:
+        row = conn.execute('SELECT token_version FROM users WHERE user_id = ?', (user_id,)).fetchone()
+    return int(row['token_version']) if row else 0
+
+def bump_token_version(user_id):
+    """Invalidate all existing JWTs for a user by incrementing their version."""
+    if not user_id:
+        return
+    now = datetime.utcnow().isoformat() + 'Z'
+    with _write_lock, _connect() as conn:
+        conn.execute(
+            'UPDATE users SET token_version = token_version + 1, updated_at = ? WHERE user_id = ?',
+            (now, user_id),
+        )
+        conn.commit()
 
 def delete_user(user_id):
     with _write_lock, _connect() as conn:
         conn.execute('DELETE FROM user_settings WHERE user_id = ?', (user_id,))
+        conn.execute('DELETE FROM passkeys WHERE user_id = ?', (user_id,))
         cur = conn.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
         conn.commit()
     return cur.rowcount > 0
@@ -342,8 +381,7 @@ def archive_and_purge_guests():
     ids = tuple(r['user_id'] for r in expired)
     with _write_lock, _connect() as conn:
         conn.execute(f"DELETE FROM user_settings WHERE user_id IN ({','.join('?'*len(ids))})", ids)
-        conn.execute(f"DELETE FROM revoked_tokens WHERE jti IN ("
-                     f"SELECT jti FROM revoked_tokens LIMIT 0)")
+        # passkeys are removed via ON DELETE CASCADE (foreign_keys=ON)
         conn.execute(f"DELETE FROM users WHERE user_id IN ({','.join('?'*len(ids))})", ids)
         conn.commit()
 
@@ -446,18 +484,25 @@ def list_user_passkeys(user_id):
     ]
 
 
-def create_user_passwordless(username, email=None, role='user', forced_id=None):
-    """Create a user with an unusable password hash (passkey-only account)."""
+def create_user_passwordless(username, email=None, role=None, forced_id=None):
+    """Create a user with an unusable password hash (passkey-only account).
+
+    When role is None, the first registered non-guest user becomes admin,
+    decided atomically inside the write lock (see create_user).
+    """
     username = (username or '').strip()
     err = validate_username(username)
     if err:
         raise ValueError(err)
-    if role not in VALID_ROLES:
-        role = 'user'
     now = datetime.now(timezone.utc).isoformat()
     user_id = forced_id or str(uuid.uuid4())
     unusable_hash = '!!' + bcrypt.hashpw(uuid.uuid4().bytes, bcrypt.gensalt()).decode('utf-8')
     with _write_lock, _connect() as conn:
+        if role is None:
+            existing = conn.execute('SELECT 1 FROM users WHERE is_guest = 0 LIMIT 1').fetchone()
+            role = 'admin' if existing is None else 'user'
+        elif role not in VALID_ROLES:
+            role = 'user'
         try:
             conn.execute(
                 'INSERT INTO users'

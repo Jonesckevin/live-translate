@@ -92,10 +92,6 @@ services:
       - "${DOCKER_PORT:-9015}:5000"
     volumes:
       - ${DATA_DIR:-./data}:/data
-      - ${DATA_DIR:-./data}/whisper-model:/data/whisper-model
-      - ${DATA_DIR:-./data}/cache/huggingface:/data/cache/huggingface
-      - ${DATA_DIR:-./data}/cache/libretranslate-local:/data/.local
-      - ${DATA_DIR:-./data}/session-icons:/app/session-icons
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

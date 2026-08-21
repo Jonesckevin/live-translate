@@ -4,13 +4,40 @@ Ported from OCR-WebApp with translation-focused modifications.
 """
 
 import os
+import re
 import logging
+import ipaddress
 import requests
 
 logger = logging.getLogger(__name__)
 
 OLLAMA_HOST = os.environ.get('OLLAMA_HOST', 'http://host.docker.internal:11434')
 LMSTUDIO_HOST = os.environ.get('LMSTUDIO_HOST', 'http://host.docker.internal:1234')
+
+# Hosts that are never valid targets for client-supplied custom_config (SSRF).
+_CUSTOM_CONFIG_BLOCKED_HOSTS = {
+    'localhost',
+    'localhost.localdomain',
+    'host.docker.internal',
+    'gateway.docker.internal',
+    'docker.for.mac.host.internal',
+    'docker.for.win.host.internal',
+    'metadata',
+    'metadata.google.internal',
+}
+
+
+def _is_ssrf_target(host):
+    """Return True when a host is loopback / link-local / metadata / internal."""
+    lowered = host.lower().rstrip('.')
+    if lowered in _CUSTOM_CONFIG_BLOCKED_HOSTS:
+        return True
+    try:
+        addr = ipaddress.ip_address(lowered)
+    except ValueError:
+        return False
+    return (addr.is_loopback or addr.is_link_local or addr.is_unspecified
+            or addr.is_multicast or addr.is_reserved)
 
 class LLMManager:
     """Unified LLM client supporting multiple providers."""
@@ -119,21 +146,43 @@ class LLMManager:
         return filtered
 
     @staticmethod
+    def sanitize_custom_config(provider, custom_config):
+        """Validate and sanitize a client-supplied custom_config dict.
+
+        Returns a dict with only {protocol, host, port} on success, or None if
+        the config is malformed or targets a loopback/link-local/internal host
+        (SSRF protection).
+        """
+        if not custom_config or not isinstance(custom_config, dict):
+            return None
+        protocol = (str(custom_config.get('protocol') or 'http')).lower()
+        if protocol not in ('http', 'https'):
+            return None
+        host = (str(custom_config.get('host') or '')).strip()
+        if (not host or len(host) > 253 or '..' in host
+                or not re.match(r'^[A-Za-z0-9.\-\[\]:]+$', host)):
+            return None
+        if _is_ssrf_target(host):
+            return None
+        default_port = 11434 if provider == 'ollama' else 1234
+        try:
+            port = int(custom_config.get('port', default_port))
+        except (TypeError, ValueError):
+            return None
+        if not (1 <= port <= 65535):
+            return None
+        return {'protocol': protocol, 'host': host, 'port': port}
+
+    @staticmethod
     def get_base_url(provider, custom_config=None):
-        if provider == 'ollama':
+        if provider in ('ollama', 'lmstudio'):
             if custom_config:
-                protocol = custom_config.get('protocol', 'http')
-                host = custom_config.get('host', 'localhost')
-                port = custom_config.get('port', 11434)
-                return f"{protocol}://{host}:{port}"
-            return OLLAMA_HOST
-        elif provider == 'lmstudio':
-            if custom_config:
-                protocol = custom_config.get('protocol', 'http')
-                host = custom_config.get('host', 'localhost')
-                port = custom_config.get('port', 1234)
-                return f"{protocol}://{host}:{port}"
-            return LMSTUDIO_HOST
+                clean = LLMManager.sanitize_custom_config(provider, custom_config)
+                if clean is None:
+                    logger.warning("Blocked invalid/SSRF custom_config for %s", provider)
+                    return ''
+                return f"{clean['protocol']}://{clean['host']}:{clean['port']}"
+            return OLLAMA_HOST if provider == 'ollama' else LMSTUDIO_HOST
         else:
             return LLMManager.PROVIDER_CONFIGS.get(provider, {}).get('base_url', '')
 
@@ -141,6 +190,11 @@ class LLMManager:
     def test_connection(provider, api_key=None, custom_config=None):
         try:
             base_url = LLMManager.get_base_url(provider, custom_config)
+            if not base_url:
+                return {
+                    'connected': False, 'status_code': 0, 'url': '',
+                    'error': 'Invalid custom_config (blocked for security)',
+                }
             prov_config = LLMManager.PROVIDER_CONFIGS.get(provider, {})
             headers = {'Content-Type': 'application/json', 'User-Agent': 'Live-Translate/1.0'}
             if api_key:

@@ -107,6 +107,7 @@
   
   function onAuthenticated(tokenStr, remember) {
     setToken(tokenStr, remember);
+    if (window.reconnectSocket) window.reconnectSocket();
     if (gateEl) {
       
       gateEl.classList.add('auth-gate-fading');

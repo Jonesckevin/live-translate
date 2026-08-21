@@ -8,6 +8,7 @@ import logging
 import socket
 import time
 import json
+import re
 
 import requests
 
@@ -184,6 +185,8 @@ class TranslationManager:
             translated = result['translated_text']
             for placeholder, tgt_term in placeholders.items():
                 translated = translated.replace(placeholder, tgt_term)
+            if '__GLOSS_' in translated:
+                translated = re.sub(r'__GLOSS_\d+__', '', translated)
             result['translated_text'] = translated
 
         return result

@@ -241,6 +241,8 @@ def _passkey_origin() -> str:
 
 _pk_challenges: dict = {}
 _pk_lock = threading.Lock()
+_PK_CHALLENGE_TTL = 300
+_PK_MAX_CHALLENGES = 2000
 
 
 def _pk_put(data: dict) -> str:
@@ -250,7 +252,12 @@ def _pk_put(data: dict) -> str:
         stale = [k for k, v in list(_pk_challenges.items()) if v['_exp'] < now]
         for k in stale:
             del _pk_challenges[k]
-        _pk_challenges[cid] = {**data, '_exp': now + 300}
+        # Hard cap to bound memory against bursts of unverified challenges.
+        overflow = len(_pk_challenges) - (_PK_MAX_CHALLENGES - 1)
+        if overflow > 0:
+            for k in list(_pk_challenges)[:overflow]:
+                del _pk_challenges[k]
+        _pk_challenges[cid] = {**data, '_exp': now + _PK_CHALLENGE_TTL}
     return cid
 
 
@@ -267,6 +274,9 @@ def mask_api_key(key):
         return None
     return f"●●●●●●{key[-6:]}"
 
+_offline_probe_cache = {'result': None, 'ts': 0.0}
+_OFFLINE_PROBE_TTL = 30  # seconds between actual network probes
+
 def is_offline_mode():
     """Detect if app should run in offline mode."""
     env_offline = os.environ.get('OFFLINE_MODE', 'auto').lower()
@@ -274,12 +284,20 @@ def is_offline_mode():
         return True
     elif env_offline == 'false':
         return False
-    
+
+    now = time.time()
+    if _offline_probe_cache['result'] is not None and (now - _offline_probe_cache['ts']) < _OFFLINE_PROBE_TTL:
+        return _offline_probe_cache['result']
+
     try:
         socket.create_connection(("8.8.8.8", 53), timeout=2)
-        return False
+        result = False
     except (socket.error, socket.timeout):
-        return True
+        result = True
+
+    _offline_probe_cache['result'] = result
+    _offline_probe_cache['ts'] = now
+    return result
 
 def get_runtime_offline_state():
     """Resolve effective offline policy from persisted settings + env/auto checks."""
@@ -315,18 +333,25 @@ def apply_offline_translation_policy(engine, provider, model):
 
     return engine, provider, model, policy_warning, mode_state
 
-def get_api_key(provider, request_headers):
+def get_api_key(provider, request_headers, user=None):
     key_source = request_headers.get('X-API-Key-Source', 'client')
     client_key = request_headers.get('X-API-Key', '')
     server_key = SERVER_API_KEYS.get(provider, '')
 
-    if key_source == 'server' and server_key:
+    if user is None and ALLOW_AUTH:
+        user = auth_manager.get_current_user()
+    # Server-owned keys are only served to authenticated callers when auth is
+    # enabled; anonymous callers must supply their own client key. This prevents
+    # unauthenticated clients from burning the server's paid quota.
+    authenticated = (not ALLOW_AUTH) or (user is not None)
+
+    if key_source == 'server' and server_key and authenticated:
         return server_key, 'server'
     elif key_source == 'client' and client_key and ALLOW_CLIENT_API_KEYS:
         return client_key, 'client'
     elif client_key and ALLOW_CLIENT_API_KEYS:
         return client_key, 'client'
-    elif server_key:
+    elif server_key and authenticated:
         return server_key, 'server'
     return None, None
 
@@ -358,6 +383,48 @@ def attach_request_id():
     if not request_id:
         request_id = f"req-{uuid.uuid4().hex[:12]}"
     g.request_id = request_id
+
+# Endpoints reachable without a token when REQUIRE_AUTH is on.
+_REQUIRE_AUTH_PUBLIC_PREFIXES = (
+    '/health',
+    '/docs',
+    '/static/',
+    '/join/',
+    '/auth/',
+    '/socket.io/',
+)
+# Read-only config/info API endpoints used to render the UI before login.
+_REQUIRE_AUTH_PUBLIC_API_ENDPOINTS = {
+    '/api/config',
+    '/api/languages',
+    '/api/libretranslate/status',
+    '/api/offline-status',
+}
+
+@app.before_request
+def enforce_require_auth():
+    """When REQUIRE_AUTH is enabled, reject anonymous access to functional API
+    routes (translation, sessions, glossaries, settings) while keeping public,
+    info, and auth endpoints reachable. Guest logins produce valid tokens, so
+    guest access still works when ALLOW_GUEST_LOGIN is enabled.
+    """
+    if not ALLOW_AUTH or not REQUIRE_AUTH:
+        return None
+    path = request.path
+    if path == '/' or path.startswith(_REQUIRE_AUTH_PUBLIC_PREFIXES):
+        return None
+    if path in _REQUIRE_AUTH_PUBLIC_API_ENDPOINTS:
+        return None
+    if path.startswith('/api/') and auth_manager.get_current_user() is None:
+        return jsonify({'error': 'Authentication required'}), 401
+    return None
+
+
+def _sync_analytics_enabled():
+    """Enable analytics collection only when both the env flag and the admin
+    toggle are on."""
+    admin_enabled = bool(admin_settings_manager.get_settings().get('enable_analytics', False))
+    analytics.set_enabled(ENABLE_SERVER_ANALYTICS and admin_enabled)
 
 @app.after_request
 def add_request_id_header(response):
@@ -466,9 +533,8 @@ def auth_register():
     auth_manager.record_register_attempt(ip)
     data = request.get_json() or {}
     try:
-        role = 'admin' if user_manager.count_users() == 0 else 'user'
         user = user_manager.create_user(
-            data.get('username'), data.get('password'), data.get('email'), role=role,
+            data.get('username'), data.get('password'), data.get('email'),
         )
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -632,9 +698,8 @@ def passkey_register_verify():
     if c['is_new_user']:
         auth_manager.record_register_attempt(ip)
         try:
-            role = 'admin' if user_manager.count_users() == 0 else 'user'
             user = user_manager.create_user_passwordless(
-                c['username'], c.get('email'), role=role, forced_id=c['uid'])
+                c['username'], c.get('email'), forced_id=c['uid'])
         except ValueError as exc:
             return jsonify({'error': str(exc)}), 400
     else:
@@ -729,6 +794,8 @@ def passkey_login_verify():
     app_logger.info("AUTH: passkey login '%s'", user['username'])
     analytics.incr('logins')
     return jsonify({'user': user, 'token': token})
+
+@app.route('/api/translate', methods=['POST'])
 def translate_text():
     data = request.get_json()
     if not data or not data.get('text'):
@@ -770,14 +837,19 @@ def translate_text():
     if result.get('success'):
         session_id = data.get('session_id')
         if session_id:
-            session_manager.add_message(session_id, {
-                'source_text': text,
-                'translated_text': result.get('translated_text', ''),
-                'source_language': source_lang,
-                'target_language': target_lang,
-                'engine': result.get('engine', engine),
-            })
-            app_logger.info(f"💾 Message saved to session {session_id}")
+            session_data = session_manager.get_session(session_id)
+            if session_data is not None:
+                denied = _session_access_error(session_data, 'write', session_id)
+                if denied:
+                    return denied
+                session_manager.add_message(session_id, {
+                    'source_text': text,
+                    'translated_text': result.get('translated_text', ''),
+                    'source_language': source_lang,
+                    'target_language': target_lang,
+                    'engine': result.get('engine', engine),
+                })
+                app_logger.info(f"💾 Message saved to session {session_id}")
         app_logger.info(f"✓ REST translation successful")
     else:
         app_logger.warning(f"✗ REST translation failed: {result.get('error', 'Unknown error')}")
@@ -797,6 +869,12 @@ def translate_multi():
     engine = data.get('engine', 'libretranslate')
     provider = data.get('provider')
     model = data.get('model')
+
+    if not isinstance(target_langs, list) or not target_langs:
+        return jsonify({'error': 'target_languages must be a non-empty list'}), 400
+    target_langs = [lang for lang in target_langs if isinstance(lang, str) and lang]
+    if not target_langs:
+        return jsonify({'error': 'target_languages must be a non-empty list'}), 400
 
     engine, provider, model, policy_warning, _ = apply_offline_translation_policy(engine, provider, model)
 
@@ -982,19 +1060,25 @@ def offline_status():
 def _share_code_from_request():
     return (request.args.get('share') or request.headers.get('X-Share-Code') or '').strip()
 
-def _session_access_error(session_data, action, session_id):
+def _session_access_error(session_data, action, session_id, user=None):
     """Return None when access is allowed, else a Flask (response, status) tuple.
-    No-op (always allowed) when auth is disabled, preserving anonymous behavior."""
+    No-op (always allowed) when auth is disabled, preserving anonymous behavior.
+    `user` may be provided explicitly (e.g. an authenticated Socket.IO user);
+    otherwise it is resolved from the current HTTP request."""
     if not ALLOW_AUTH:
         return None
-    user = auth_manager.get_current_user()
+    if user is None:
+        user = auth_manager.get_current_user()
     uid = (user or {}).get('sub')
     role = (user or {}).get('role')
     share_ok = False
+    share_access = None
     code = _share_code_from_request()
     if code:
         payload = crypto_manager.verify(code, max_age=SHARE_CODE_TTL)
-        share_ok = bool(payload and payload.get('sid') == session_id)
+        if payload and payload.get('sid') == session_id:
+            share_ok = True
+            share_access = payload.get('access') or 'view'
 
     if (action == 'read'
             and session_data.get('visibility') == 'public'
@@ -1005,7 +1089,7 @@ def _session_access_error(session_data, action, session_id):
         if not _verify_session_password(provided, session_data.get('join_password_hash')):
             return jsonify({'error': 'Password required', 'requires_password': True}), 403
 
-    if session_manager.can_access(session_data, user, action, share_ok=share_ok):
+    if session_manager.can_access(session_data, user, action, share_ok=share_ok, share_access=share_access):
         return None
     if user:
         return jsonify({'error': 'You do not have access to this session'}), 403
@@ -1139,6 +1223,10 @@ def get_session_icon(session_id):
     session_data = session_manager.get_session(session_id)
     if session_data is None:
         return jsonify({'error': 'Session not found'}), 404
+
+    denied = _session_access_error(session_data, 'read', session_id)
+    if denied:
+        return denied
 
     icon_filename = session_data.get('icon_filename')
     if not icon_filename:
@@ -1466,6 +1554,7 @@ def admin_update_settings():
     result = admin_settings_manager.save_settings(request.get_json() or {})
     if not result.get('success'):
         return jsonify(result), 400
+    _sync_analytics_enabled()
     app_logger.info(f"ADMIN: {g.current_user.get('username')} updated server settings")
     return jsonify({'success': True, 'settings': admin_settings_manager.get_settings()})
 
@@ -1482,11 +1571,25 @@ def _current_settings_user():
     return user.get('sub') if user else None
 
 def _hash_session_password(password):
-    """Hash a session join password for storage (non-credential; sha256 with SECRETS salt)."""
+    """Hash a session join password with PBKDF2-HMAC-SHA256 and a random salt.
+
+    Self-contained salt means the stored hash survives SECRETS rotation.
+    Format: pbkdf2$<salt_hex>$<hash_hex>.
+    """
+    if not password:
+        return None
+    salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac('sha256', str(password).encode('utf-8'), salt.encode('utf-8'), 120000)
+    return f"pbkdf2${salt}${dk.hex()}"
+
+
+def _legacy_session_password_hash(password):
+    """Reproduce the old sha256(SECRETS_salt + password) hash for migration."""
     if not password:
         return None
     salt = (os.environ.get('SECRETS', '') or 'lt-session-salt')[:32]
     return hashlib.sha256((salt + str(password)).encode('utf-8')).hexdigest()
+
 
 def _verify_session_password(provided, stored_hash):
     """Return True if the provided password matches the stored hash."""
@@ -1494,7 +1597,16 @@ def _verify_session_password(provided, stored_hash):
         return True
     if not provided:
         return False
-    return hmac.compare_digest(_hash_session_password(str(provided)), stored_hash)
+    if stored_hash.startswith('pbkdf2$'):
+        try:
+            _, salt, expected = stored_hash.split('$', 2)
+            dk = hashlib.pbkdf2_hmac('sha256', str(provided).encode('utf-8'), salt.encode('utf-8'), 120000)
+            return hmac.compare_digest(dk.hex(), expected)
+        except (ValueError, TypeError):
+            return False
+    # Legacy sha256 (SECRETS-salted) hashes.
+    legacy = _legacy_session_password_hash(str(provided)) or ''
+    return hmac.compare_digest(legacy, stored_hash)
 
 @app.route('/api/settings', methods=['GET'])
 def get_user_settings():
@@ -1692,14 +1804,25 @@ def get_logs():
         app_logger.exception('Failed to read logs')
         return jsonify({'error': 'Failed to read logs'}), 500
 
+# Authenticated users attached to socket connections, keyed by socket id (sid).
+_socket_users = {}
+
 @socketio.on('connect')
-def handle_connect():
+def handle_connect(auth=None):
     app_logger.info(f"Client connected: {request.sid}")
-    emit('connected', {'sid': request.sid})
+    user = None
+    if isinstance(auth, dict):
+        token = (auth.get('token') or '').strip()
+        if token:
+            user = auth_manager.decode_token(token)
+    if user:
+        _socket_users[request.sid] = user
+    emit('connected', {'sid': request.sid, 'authenticated': bool(user)})
 
 @socketio.on('disconnect')
-def handle_disconnect():
+def handle_disconnect(*args):
     app_logger.info(f"Client disconnected: {request.sid}")
+    _socket_users.pop(request.sid, None)
 
 @socketio.on('join_session_room')
 def handle_join_session_room(data):
@@ -1715,9 +1838,22 @@ def handle_leave_session_room(data):
     if session_id:
         leave_room(f'session:{session_id}')
 
+@socketio.on_error()
+def handle_socket_error(e):
+    """Surface unhandled Socket.IO handler exceptions to the client."""
+    app_logger.error(f"Socket.IO handler error: {e}", exc_info=True)
+    try:
+        emit('socket_error', {'error': str(e) or 'Internal error'})
+    except Exception:
+        pass
+
 @socketio.on('translate')
 def handle_translate(data):
     """Real-time translation via WebSocket with intelligent fallback."""
+    if not isinstance(data, dict):
+        app_logger.warning("Rejected translate event with non-dict payload")
+        emit('translation_result', {'success': False, 'error': 'Invalid payload'})
+        return
     text = data.get('text', '')
     source_lang = data.get('source_language', 'auto')
     target_lang = data.get('target_language', 'en')
@@ -1742,7 +1878,7 @@ def handle_translate(data):
             'X-API-Key-Source': api_key_source,
             'X-API-Key': api_key or '',
         }
-        api_key, _ = get_api_key(provider, pseudo_headers)
+        api_key, _ = get_api_key(provider, pseudo_headers, user=_socket_users.get(request.sid))
 
     custom_config = data.get('custom_config')
 
@@ -1767,7 +1903,7 @@ def handle_translate(data):
     if not result.get('success') and engine == 'libretranslate' and not mode_state['offline'] and (provider or SERVER_API_KEYS.get('anthropic')):
         app_logger.info(f"⚠ LibreTranslate failed, falling back to LLM provider")
         fallback_provider = provider or 'anthropic'
-        fallback_model = model or 'claude-3-5-sonnet-20241022'
+        fallback_model = model or config.get('llm', {}).get('providers', {}).get(fallback_provider, {}).get('default_model')
         fallback_api_key = api_key or SERVER_API_KEYS.get(fallback_provider, '')
         
         result = TranslationManager.translate(
@@ -1793,22 +1929,28 @@ def handle_translate(data):
 
     ws_session_id = (data.get('session_id') or '').strip()
     if ws_session_id and session_manager._is_safe_id(ws_session_id) and result.get('success') and not interim:
-        saved_msg = {
-            'source_text': text,
-            'translated_text': result.get('translated_text', ''),
-            'source_language': source_lang,
-            'target_language': target_lang,
-            'engine': result.get('engine', engine),
-            'panel': panel,
-            'timestamp': datetime.utcnow().isoformat() + 'Z',
-        }
-        session_manager.add_message(ws_session_id, saved_msg)
-        socketio.emit(
-            'session_new_message', saved_msg,
-            to=f'session:{ws_session_id}',
-            skip_sid=request.sid,
-            namespace='/',
-        )
+        ws_session = session_manager.get_session(ws_session_id)
+        if ws_session is not None:
+            denied = _session_access_error(ws_session, 'write', ws_session_id, user=_socket_users.get(request.sid))
+            if denied:
+                app_logger.warning(f"Denied message save to session {ws_session_id}")
+            else:
+                saved_msg = {
+                    'source_text': text,
+                    'translated_text': result.get('translated_text', ''),
+                    'source_language': source_lang,
+                    'target_language': target_lang,
+                    'engine': result.get('engine', engine),
+                    'panel': panel,
+                    'timestamp': datetime.utcnow().isoformat() + 'Z',
+                }
+                session_manager.add_message(ws_session_id, saved_msg)
+                socketio.emit(
+                    'session_new_message', saved_msg,
+                    to=f'session:{ws_session_id}',
+                    skip_sid=request.sid,
+                    namespace='/',
+                )
 
     emit('translation_result', result)
 
@@ -1907,8 +2049,15 @@ def run_preflight_checks():
                 raise RuntimeError('faster-whisper not installed')
 
             if WHISPER_PRELOAD_ON_STARTUP:
-                whisper_manager.get_whisper_model()
-                app_logger.info(f"✓ Whisper STT: Available and preloaded (model: {whisper_manager.WHISPER_MODEL})")
+                # Preload in a background thread so the server starts serving
+                # /health immediately instead of waiting for the model load.
+                def _whisper_preload():
+                    try:
+                        whisper_manager.get_whisper_model()
+                        app_logger.info(f"✓ Whisper STT: Preloaded (model: {whisper_manager.WHISPER_MODEL})")
+                    except Exception as e:
+                        app_logger.warning(f"✗ Whisper STT: Preload failed - {e}")
+                threading.Thread(target=_whisper_preload, daemon=True).start()
             else:
                 app_logger.info(
                     f"✓ Whisper STT: Available (lazy-load enabled, model: {whisper_manager.WHISPER_MODEL})"
@@ -1983,6 +2132,8 @@ if __name__ == '__main__':
     app_logger.info("Session persistence: always enabled")
 
     validate_security_config()
+
+    _sync_analytics_enabled()
 
     if ALLOW_AUTH:
         user_manager.init_db()

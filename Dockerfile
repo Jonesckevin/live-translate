@@ -18,8 +18,12 @@ RUN LIBRE_SITE_PACKAGES=$(/opt/libretranslate-venv/bin/python -c "import site; p
     "$LIBRE_SITE_PACKAGES/libretranslate/app.py"
 FROM ${PYTHON_BASE}
 WORKDIR /app
+# openssl is required by entrypoint.sh (secret generation); ca-certificates is
+# required for Hugging Face / Argos model downloads at runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    openssl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /install /usr/local
 COPY --from=builder /opt/libretranslate-venv /opt/libretranslate-venv
@@ -30,7 +34,8 @@ RUN groupadd --gid 1000 appuser \
         /data/whisper-model /data/session-icons /data/cache/huggingface \
     && chmod +x /app/entrypoint.sh \
     && chown -R appuser:appuser /app /data /home/appuser
-USER appuser
+# The container starts as root so entrypoint.sh can repair /data ownership on
+# bind-mounted volumes; it drops to appuser (uid 1000) before launching the app.
 EXPOSE 5000
 ENV PYTHONUNBUFFERED=1
 ENV HOME=/data
@@ -39,12 +44,10 @@ ENV LIBRETRANSLATE_LOCAL_ENABLED=true
 ENV LIBRETRANSLATE_LOCAL_URL=http://127.0.0.1:5001
 ENV LIBRETRANSLATE_SERVER_URL=http://libretranslate:5000
 ENV SESSION_ICON_DIR=/data/session-icons
-ENV DATA_DIR=./data
 ENV LOG_DIR=/data/logs
 ENV MAX_UPLOAD_MB=25
 ENV OFFLINE_MODE=auto
 ENV ALLOW_USER_REGISTRATION=true
-ENV ALLOW_GUEST_LOGIN=true
 ENV WHISPER_ENABLED=true
 ENV WHISPER_MODEL=tiny
 ENV WHISPER_USE_GPU=false
@@ -57,16 +60,11 @@ ENV LOGIN_RATE_WINDOW=900
 ENV REGISTER_RATE_MAX=3
 ENV REGISTER_RATE_WINDOW=3600
 ENV SHARE_CODE_TTL=86400
-ENV LOG_SESSIONS=false
-ENV LOG_TRANSLATIONS=false
-ENV ENABLE_SERVER_ANALYTICS=false
 ENV REQUIRE_SECRETS=true
 ENV REQUIRE_AUTH=true
 ENV ALLOW_AUTH=true
-ENV ALLOW_CLIENT_API_KEYS=true
 ENV STARTUP_FAIL_ON_CHECKS=false
 ENV TRUST_PROXY=false
-ENV SOCKETIO_ASYNC_HANDLERS=true
 ENV SOCKETIO_PING_TIMEOUT=60
 ENV SOCKETIO_PING_INTERVAL=25
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \

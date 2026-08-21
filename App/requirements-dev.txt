@@ -1,4 +1,4 @@
 # Development / test dependencies (not installed into the production image).
 # Install with:  pip install -r App/requirements-dev.txt
 pytest==8.3.4
-requests==2.32.3
+requests>=2.33.0

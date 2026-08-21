@@ -30,6 +30,10 @@ JWT_ALGORITHM = 'HS256'
 JWT_ISSUER = 'live-translate'
 JWT_TTL_SECONDS = int(os.environ.get('JWT_TTL_SECONDS', str(24 * 3600)))
 
+# Only trust X-Forwarded-For when running behind a trusted reverse proxy.
+# Otherwise clients can spoof the header to bypass login/register rate limits.
+TRUST_PROXY = os.environ.get('TRUST_PROXY', 'false').lower() == 'true'
+
 LOGIN_RATE_MAX = int(os.environ.get('LOGIN_RATE_MAX', '5'))
 LOGIN_RATE_WINDOW = int(os.environ.get('LOGIN_RATE_WINDOW', '900'))
 REGISTER_RATE_MAX = int(os.environ.get('REGISTER_RATE_MAX', '3'))
@@ -45,6 +49,7 @@ def create_access_token(user_id, role, username, extra_claims=None):
         'sub': user_id,
         'username': username,
         'role': role,
+        'token_version': user_manager.get_token_version(user_id),
         'iat': now,
         'exp': now + JWT_TTL_SECONDS,
         'iss': JWT_ISSUER,
@@ -68,6 +73,13 @@ def decode_token(token):
     except jwt.InvalidTokenError:
         return None
     if user_manager.is_token_revoked(claims.get('jti', '')):
+        return None
+    # Reject tokens for deleted or banned users, and tokens whose version no
+    # longer matches the user's current token_version (e.g. after a ban).
+    row = user_manager.get_user_by_id(claims.get('sub', ''))
+    if row is None or row['status'] != 'active':
+        return None
+    if int(row['token_version']) != int(claims.get('token_version', 0)):
         return None
     return claims
 
@@ -112,9 +124,10 @@ def admin_required(view):
     return wrapper
 
 def client_ip():
-    forwarded = request.headers.get('X-Forwarded-For', '')
-    if forwarded:
-        return forwarded.split(',')[0].strip()
+    if TRUST_PROXY:
+        forwarded = request.headers.get('X-Forwarded-For', '')
+        if forwarded:
+            return forwarded.split(',')[0].strip()
     return request.remote_addr or '-'
 
 def login_rate_ok(ip):

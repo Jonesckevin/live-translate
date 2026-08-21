@@ -446,7 +446,9 @@
     }
 
     function initSocket() {
+        const authToken = localStorage.getItem('lt_auth_token') || sessionStorage.getItem('lt_auth_token_s') || '';
         socket = io({
+            auth: { token: authToken },
             transports: ['websocket', 'polling'],
             upgrade: true,
             rememberUpgrade: true,
@@ -498,6 +500,17 @@
             createConvBubble(otherSide, msg.translated_text || '', 'translated', false, msg.timestamp);
         });
     }
+
+    // Reconnect the Socket.IO client so it carries the latest auth token
+    window.reconnectSocket = function () {
+        if (!socket) return;
+        const authToken = localStorage.getItem('lt_auth_token') || sessionStorage.getItem('lt_auth_token_s') || '';
+        if (socket.auth) {
+            socket.auth.token = authToken;
+        }
+        socket.disconnect();
+        socket.connect();
+    };
 
     
     
@@ -611,7 +624,7 @@
             if (!sel) continue;
             sel.innerHTML = '';
             for (const lang of languages) {
-                if (lang.source_only && (selId === 'convLeftLang' || selId === 'convRightLang')) continue;
+                if (lang.source_only && selId === 'convRightLang') continue;
                 const opt = document.createElement('option');
                 opt.value = lang.code;
                 opt.textContent = lang.name;
@@ -922,7 +935,9 @@
             const lang = document.getElementById(`conv${cap(side)}Lang`).value;
             const otherSide = side === 'left' ? 'right' : 'left';
             const otherInst = convSpeechInstances[otherSide];
-            const engine = window.speechManager?.sttEngine || 'web_speech_api';
+            // Prefer the server-persisted STT engine (loaded into userSettings),
+            // falling back to the global manager (localStorage) and then default.
+            const engine = (userSettings && userSettings.stt_engine) || window.speechManager?.sttEngine || 'web_speech_api';
 
             
             
@@ -992,7 +1007,7 @@
                 showToast(msg, 'error');
             };
 
-            speechInst.setEngine(window.speechManager?.sttEngine || 'web_speech_api');
+            speechInst.setEngine((userSettings && userSettings.stt_engine) || window.speechManager?.sttEngine || 'web_speech_api');
             speechInst.start(lang);
             return true;
         };
@@ -1353,7 +1368,10 @@
         state.finalText = '';
         state.interimText = '';
         state.lastSentText = '';
-        state.latestRequestId = 0;
+        // latestRequestId is intentionally NOT reset to 0 so that in-flight
+        // responses from the previous utterance (lower request ids) are rejected
+        // by the stale-response guard instead of painting old text into a new
+        // utterance's bubbles.
         state.inFlightRequestId = 0;
         state.isInFlight = false;
         state.pendingPayload = null;
@@ -1560,7 +1578,6 @@
         const input = document.getElementById(`conv${cap(side)}Input`);
         const text = input.value.trim();
         if (!text) return;
-        input.value = '';
 
         try {
             await ensureConversationSession();
@@ -1572,6 +1589,10 @@
             }
             return;
         }
+
+        // Only clear the input once the session is confirmed so a failed
+        // session selection does not discard the user's typed message.
+        input.value = '';
 
         const srcLang = document.getElementById(`conv${cap(side)}Lang`).value;
         const otherSide = side === 'left' ? 'right' : 'left';
@@ -1590,7 +1611,12 @@
             warnCloudDisabledIfNeeded();
         }
 
-        
+        if (!socket || !socket.connected) {
+            input.value = text; // restore so the user's message is not lost
+            showToast('Connection lost. Reconnecting... Please try again.', 'error');
+            return;
+        }
+
         addConvBubble(side, text, 'original');
 
         
@@ -1683,44 +1709,12 @@
                 translated = window.llmAPIManager.postProcessTranslation(translated);
             }
             addConvBubble(otherSide, translated, 'translated');
-            
-            
-            if (currentSessionId) {
-                const srcLang = document.getElementById(`conv${cap(panel)}Lang`)?.value || 'en';
-                const tgtLang = document.getElementById(`conv${cap(otherSide)}Lang`)?.value || 'fr';
-                fetch(`/api/sessions/${currentSessionId}/messages`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        source_text: data.original_text || '',
-                        translated_text: translated,
-                        source_language: srcLang,
-                        target_language: tgtLang,
-                        engine: effectiveResult.engine || 'libretranslate',
-                        panel: panel,
-                    }),
-                }).catch(() => { });
-            }
+            // The server already persists successful non-interim translations to
+            // the session (session_manager.add_message), so the client must NOT
+            // POST here again or every message would be duplicated in history.
         } else {
             addConvBubble(otherSide, `⚠ ${effectiveResult.error}`, 'translated');
-            
-            
-            if (currentSessionId) {
-                const srcLang = document.getElementById(`conv${cap(panel)}Lang`)?.value || 'en';
-                const tgtLang = document.getElementById(`conv${cap(otherSide)}Lang`)?.value || 'fr';
-                fetch(`/api/sessions/${currentSessionId}/messages`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        source_text: data.original_text || '',
-                        translated_text: `Error: ${effectiveResult.error || 'Translation failed'}`,
-                        source_language: srcLang,
-                        target_language: tgtLang,
-                        engine: effectiveResult.engine || 'libretranslate',
-                        panel: panel,
-                    }),
-                }).catch(() => { });
-            }
+            // Errors are intentionally not persisted to session history.
         }
     }
 
@@ -2003,14 +1997,16 @@
                     passRow.style.display = visSelect.value === 'public' ? '' : 'none';
                 };
                 syncPassRow();
-                visSelect.addEventListener('change', syncPassRow);
+                // Assign (not addEventListener) so re-opening a session doesn't
+                // accumulate duplicate change handlers on the selects.
+                visSelect.onchange = syncPassRow;
 
                 passEnabled.checked = !!data.has_password;
                 passInput.style.display = passEnabled.checked ? '' : 'none';
-                passEnabled.addEventListener('change', () => {
+                passEnabled.onchange = () => {
                     passInput.style.display = passEnabled.checked ? '' : 'none';
                     if (!passEnabled.checked) passInput.value = '';
-                });
+                };
 
                 
                 const saveBtn = document.getElementById('sessionVisSave');

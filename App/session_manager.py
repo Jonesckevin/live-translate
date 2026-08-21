@@ -8,6 +8,7 @@ import re
 import json
 import logging
 import tempfile
+import threading
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,10 @@ SESSION_DIR = os.environ.get('SESSION_DIR', '/data/sessions')
 SESSION_ICON_DIR = os.environ.get('SESSION_ICON_DIR', '/data/session-icons')
 RETENTION_DAYS = int(os.environ.get('SESSION_RETENTION_DAYS', '30'))
 _UNSET = object()
+
+# Guards the read-modify-write cycles over session JSON files so concurrent
+# REST + Socket.IO translation handlers cannot drop messages (lost updates).
+_session_lock = threading.Lock()
 
 _VALID_ID_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
 
@@ -122,23 +127,24 @@ def add_message(session_id, message):
     if not _is_safe_id(session_id):
         logger.warning("Rejected unsafe session id in add_message")
         return None
-    _ensure_dir()
-    fpath = os.path.join(SESSION_DIR, f"{session_id}.json")
-    if not os.path.exists(fpath):
-        logger.warning(f"Session {session_id} not found")
-        return None
-    with open(fpath, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    if 'timestamp' not in message:
-        message['timestamp'] = datetime.utcnow().isoformat() + 'Z'
-    source_text_preview = message.get('source_text', '')[:30]
-    translated_text_preview = message.get('translated_text', '')[:30]
-    logger.debug(f"Adding message to session {session_id}: {source_text_preview}... -> {translated_text_preview}...")
-    data['messages'].append(message)
-    data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-    _atomic_write_json(fpath, data)
-    logger.info(f"Message saved to session {session_id} | Total messages: {len(data['messages'])}")
-    return data
+    with _session_lock:
+        _ensure_dir()
+        fpath = os.path.join(SESSION_DIR, f"{session_id}.json")
+        if not os.path.exists(fpath):
+            logger.warning(f"Session {session_id} not found")
+            return None
+        with open(fpath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if 'timestamp' not in message:
+            message['timestamp'] = datetime.utcnow().isoformat() + 'Z'
+        source_text_preview = message.get('source_text', '')[:30]
+        translated_text_preview = message.get('translated_text', '')[:30]
+        logger.debug(f"Adding message to session {session_id}: {source_text_preview}... -> {translated_text_preview}...")
+        data['messages'].append(message)
+        data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        _atomic_write_json(fpath, data)
+        logger.info(f"Message saved to session {session_id} | Total messages: {len(data['messages'])}")
+        return data
 
 def update_session(session_id, title=None, icon_filename=_UNSET, visibility=_UNSET, owner_id=_UNSET,
                    join_password_hash=_UNSET):
@@ -146,33 +152,34 @@ def update_session(session_id, title=None, icon_filename=_UNSET, visibility=_UNS
     if not _is_safe_id(session_id):
         logger.warning("Rejected unsafe session id in update_session")
         return None
-    _ensure_dir()
-    fpath = os.path.join(SESSION_DIR, f"{session_id}.json")
-    if not os.path.exists(fpath):
-        logger.warning(f"Session not found for update: {session_id}")
-        return None
-    with open(fpath, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    updates = []
-    if title is not None:
-        data['title'] = title
-        updates.append(f"title='{title}'")
-    if icon_filename is not _UNSET:
-        data['icon_filename'] = icon_filename
-        updates.append(f"icon='{icon_filename}'")
-    if visibility is not _UNSET and visibility in ('private', 'shared', 'public'):
-        data['visibility'] = visibility
-        updates.append(f"visibility='{visibility}'")
-    if owner_id is not _UNSET:
-        data['owner_id'] = owner_id
-        updates.append(f"owner_id='{owner_id}'")
-    if join_password_hash is not _UNSET:
-        data['join_password_hash'] = join_password_hash
-        updates.append('join_password_hash=<set>' if join_password_hash else 'join_password_hash=<cleared>')
-    data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-    logger.debug(f"Updating session {session_id}: {', '.join(updates) if updates else 'no changes'}")
-    _atomic_write_json(fpath, data)
-    return data
+    with _session_lock:
+        _ensure_dir()
+        fpath = os.path.join(SESSION_DIR, f"{session_id}.json")
+        if not os.path.exists(fpath):
+            logger.warning(f"Session not found for update: {session_id}")
+            return None
+        with open(fpath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        updates = []
+        if title is not None:
+            data['title'] = title
+            updates.append(f"title='{title}'")
+        if icon_filename is not _UNSET:
+            data['icon_filename'] = icon_filename
+            updates.append(f"icon='{icon_filename}'")
+        if visibility is not _UNSET and visibility in ('private', 'shared', 'public'):
+            data['visibility'] = visibility
+            updates.append(f"visibility='{visibility}'")
+        if owner_id is not _UNSET:
+            data['owner_id'] = owner_id
+            updates.append(f"owner_id='{owner_id}'")
+        if join_password_hash is not _UNSET:
+            data['join_password_hash'] = join_password_hash
+            updates.append('join_password_hash=<set>' if join_password_hash else 'join_password_hash=<cleared>')
+        data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        logger.debug(f"Updating session {session_id}: {', '.join(updates) if updates else 'no changes'}")
+        _atomic_write_json(fpath, data)
+        return data
 
 def delete_icon_file(icon_filename):
     """Delete icon file by filename from the icon directory."""
@@ -253,11 +260,11 @@ def list_public_sessions(limit=50, offset=0):
     public = [s for s in list_sessions() if s.get('visibility', 'public') == 'public']
     return public[offset:offset + limit]
 
-def can_access(session_data, user, action='read', share_ok=False):
+def can_access(session_data, user, action='read', share_ok=False, share_access=None):
     """Return True if `user` (JWT claims dict or None) may perform `action`
     ('read' or 'write') on the session. Only meaningful when auth is enabled;
     anonymous-mode callers bypass this entirely to preserve legacy behavior.
-    """
+    share_access is 'view' or 'edit' (from a valid share code)."""
     if session_data is None:
         return False
     owner_id = session_data.get('owner_id')
@@ -274,7 +281,13 @@ def can_access(session_data, user, action='read', share_ok=False):
             return True
         return bool(uid) and uid == owner_id
     if owner_id is None:
-        return False
+        # Anonymous/legacy sessions remain world-writable to preserve the
+        # original anonymous behavior; only user-owned sessions are restricted.
+        return True
+    # Write is allowed to the owner, or via an 'edit' share link on a shared
+    # session ('view' share links are read-only).
+    if share_ok and share_access == 'edit' and visibility == 'shared':
+        return True
     return bool(uid) and uid == owner_id
 
 def count_user_sessions(owner_id):
