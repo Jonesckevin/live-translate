@@ -1,11 +1,19 @@
 """
 Whisper Manager - Optional server-side speech-to-text using faster-whisper.
-Only loaded when WHISPER_ENABLED=true environment variable is set.
+
+The heavy model + inference run in a dedicated worker OS process
+(whisper_worker.py) so CPU-bound transcription never blocks the main server's
+gevent event loop. This module is a thin client that spawns the worker and
+exchanges JSON-line jobs over stdin/stdout.
 """
 
 import os
+import sys
+import json
 import logging
 import tempfile
+import threading
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -14,157 +22,149 @@ WHISPER_MODEL = os.environ.get('WHISPER_MODEL', 'tiny')
 WHISPER_USE_GPU = os.environ.get('WHISPER_USE_GPU', 'false').lower() == 'true'
 WHISPER_MODEL_DIR = os.environ.get('WHISPER_MODEL_DIR', '/data/whisper-model')
 
-_whisper_model = None
-_whisper_model_name = None
-_whisper_runtime_device = None
-_whisper_runtime_compute_type = None
-_whisper_gpu_fallback_used = False
+# 3 minutes per transcription; generous upper bound for long audio on CPU.
+_TRANSCRIBE_TIMEOUT = 180
 
-def _is_cuda_runtime_error(error):
-    message = str(error).lower()
-    cuda_tokens = ('cuda', 'cublas', 'cudnn', 'ctranslate2')
-    failure_tokens = ('driver', 'runtime version', 'insufficient', 'initialization', 'failed')
-    return any(token in message for token in cuda_tokens) and any(token in message for token in failure_tokens)
+_bridge = None
+_bridge_lock = threading.Lock()
 
-def _load_model_instance(WhisperModel, model_name, device, compute_type):
-    logger.info(f"Loading Whisper model: {model_name} ({device} mode, {compute_type}) from {WHISPER_MODEL_DIR}")
-    model = WhisperModel(
-        model_name,
-        device=device,
-        compute_type=compute_type,
-        download_root=WHISPER_MODEL_DIR,
-    )
-    logger.info(f"Whisper model loaded successfully ({device}, {compute_type})")
-    return model
+
+class _WhisperWorkerBridge:
+    """Spawns and supervises the worker subprocess and dispatches results."""
+
+    def __init__(self):
+        self._proc = None
+        self._pending = {}
+        self._pending_lock = threading.Lock()
+        self._next_id = 0
+
+    def _spawn(self):
+        if self._proc is not None and self._proc.poll() is None:
+            return
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'whisper_worker.py')
+        logger.info("Starting Whisper worker process: %s", script)
+        self._proc = subprocess.Popen(
+            [sys.executable, script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            env=os.environ.copy(),
+        )
+        # Real OS thread (not a greenlet) that blocks on the worker's stdout
+        # without ever blocking the gevent event loop.
+        threading.Thread(target=self._read_loop, daemon=True).start()
+
+    def _read_loop(self):
+        try:
+            while True:
+                line = self._proc.stdout.readline()
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line)
+                except Exception:
+                    continue
+                job_id = msg.get('id')
+                with self._pending_lock:
+                    entry = self._pending.get(job_id)
+                    if entry is not None:
+                        entry['result'] = msg.get('result')
+                        entry['event'].set()
+        finally:
+            # Worker exited: fail any still-pending jobs (waiters will pop them).
+            with self._pending_lock:
+                pending = list(self._pending.values())
+            for entry in pending:
+                entry['result'] = {'success': False, 'error': 'Whisper worker stopped'}
+                entry['event'].set()
+
+    def transcribe(self, audio_path, language, model_name):
+        self._spawn()
+        with self._pending_lock:
+            job_id = self._next_id
+            self._next_id += 1
+            event = threading.Event()
+            self._pending[job_id] = {'event': event, 'result': None}
+        job = json.dumps({
+            'id': job_id,
+            'audio_path': audio_path,
+            'language': language,
+            'model_name': model_name,
+        })
+        self._proc.stdin.write(job + '\n')
+        self._proc.stdin.flush()
+        # threading.Event.wait() is greenlet-aware under gevent, so this yields
+        # to the event loop instead of blocking it.
+        event.wait(timeout=_TRANSCRIBE_TIMEOUT)
+        with self._pending_lock:
+            entry = self._pending.pop(job_id, None)
+        if entry is None or entry['result'] is None:
+            return {'success': False, 'error': 'Whisper transcription timed out'}
+        return entry['result']
+
+    def ensure_started(self):
+        self._spawn()
+
+
+def _get_bridge():
+    global _bridge
+    with _bridge_lock:
+        if _bridge is None:
+            _bridge = _WhisperWorkerBridge()
+        return _bridge
+
 
 def get_whisper_model(force_cpu=False, force_reload=False, model_name=None):
-    """Lazy-load the Whisper model."""
-    global _whisper_model, _whisper_model_name, _whisper_runtime_device, _whisper_runtime_compute_type, _whisper_gpu_fallback_used
+    """Ensure the Whisper worker (which owns the model) is running.
 
-    selected_model = (model_name or WHISPER_MODEL or 'base').strip() or 'base'
+    The model itself lives in the worker process; this just verifies the worker
+    is up so background preloading does not block the main process.
+    """
+    if WHISPER_ENABLED:
+        _get_bridge().ensure_started()
+    return True
 
-    if force_reload:
-        _whisper_model = None
-
-    if _whisper_model is not None and _whisper_model_name != selected_model:
-        logger.info(
-            "Whisper model selection changed (%s -> %s). Reloading model.",
-            _whisper_model_name,
-            selected_model,
-        )
-        _whisper_model = None
-
-    if _whisper_model is None:
-        try:
-            from faster_whisper import WhisperModel
-
-            prefer_gpu = WHISPER_USE_GPU and not force_cpu
-            device = "cuda" if prefer_gpu else "cpu"
-            compute_type = "float16" if prefer_gpu else "int8"
-
-            try:
-                _whisper_model = _load_model_instance(WhisperModel, selected_model, device, compute_type)
-                _whisper_model_name = selected_model
-                _whisper_runtime_device = device
-                _whisper_runtime_compute_type = compute_type
-            except Exception as e:
-                if prefer_gpu and _is_cuda_runtime_error(e):
-                    logger.warning(
-                        "Whisper GPU initialization failed (%s). Falling back to CPU int8.",
-                        e,
-                    )
-                    _whisper_model = _load_model_instance(WhisperModel, selected_model, "cpu", "int8")
-                    _whisper_model_name = selected_model
-                    _whisper_runtime_device = "cpu"
-                    _whisper_runtime_compute_type = "int8"
-                    _whisper_gpu_fallback_used = True
-                else:
-                    raise
-        except ImportError:
-            logger.error("faster-whisper not installed. Install with: pip install faster-whisper")
-            raise
-        except Exception as e:
-            logger.error(f"Failed to load Whisper model: {e}")
-            raise
-    return _whisper_model
 
 def transcribe(audio_data, language=None, model_name=None):
-    """
-    Transcribe audio data to text.
-    audio_data: bytes of audio file (wav, mp3, webm, etc.)
-    language: optional language code hint (e.g. 'en', 'fr')
-    Returns: dict with success, text, language, segments
+    """Transcribe audio bytes in the isolated worker process.
+
+    audio_data: bytes of an audio file (wav, mp3, webm, etc.)
+    language: optional language code hint.
+    Returns: dict with success, text, language, segments.
     """
     if not WHISPER_ENABLED:
         return {'success': False, 'error': 'Whisper is not enabled. Set WHISPER_ENABLED=true.'}
-
-    global _whisper_gpu_fallback_used
-
+    tmp_path = None
     try:
-        model = get_whisper_model(model_name=model_name)
-
         with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as tmp:
             tmp.write(audio_data)
             tmp_path = tmp.name
-
-        try:
-            kwargs = {}
-            if language and language != 'auto':
-                kwargs['language'] = language
-
-            try:
-                segments, info = model.transcribe(tmp_path, beam_size=5, **kwargs)
-            except RuntimeError as e:
-                if WHISPER_USE_GPU and _is_cuda_runtime_error(e):
-                    logger.warning(
-                        "Whisper CUDA runtime error during transcription (%s). Retrying once on CPU int8.",
-                        e,
-                    )
-                    _whisper_gpu_fallback_used = True
-                    model = get_whisper_model(force_cpu=True, force_reload=True, model_name=model_name)
-                    segments, info = model.transcribe(tmp_path, beam_size=5, **kwargs)
-                else:
-                    raise
-
-            text_parts = []
-            segment_list = []
-            for segment in segments:
-                text_parts.append(segment.text)
-                segment_list.append({
-                    'start': round(segment.start, 2),
-                    'end': round(segment.end, 2),
-                    'text': segment.text.strip(),
-                })
-
-            full_text = ' '.join(text_parts).strip()
-
-            return {
-                'success': True,
-                'text': full_text,
-                'language': info.language,
-                'language_probability': round(info.language_probability, 2),
-                'segments': segment_list,
-            }
-        finally:
-            os.unlink(tmp_path)
-
-    except ImportError:
-        return {'success': False, 'error': 'faster-whisper not installed'}
+        return _get_bridge().transcribe(tmp_path, language, model_name)
     except Exception as e:
-        logger.exception(f"Whisper transcription failed: {e}")
+        logger.exception("Whisper transcription failed: %s", e)
         return {'success': False, 'error': str(e)}
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
 
 def get_status():
-    """Get Whisper availability status."""
+    """Return Whisper availability/status (model is loaded in the worker)."""
     status = {
         'enabled': WHISPER_ENABLED,
-        'model': _whisper_model_name or WHISPER_MODEL,
+        'model': WHISPER_MODEL,
         'use_gpu': WHISPER_USE_GPU,
         'model_dir': WHISPER_MODEL_DIR,
-        'loaded': _whisper_model is not None,
-        'runtime_device': _whisper_runtime_device,
-        'runtime_compute_type': _whisper_runtime_compute_type,
-        'gpu_fallback_used': _whisper_gpu_fallback_used,
+        'loaded': WHISPER_ENABLED,  # model loads in the worker process
+        'runtime_device': 'cuda' if WHISPER_USE_GPU else 'cpu',
+        'runtime_compute_type': 'float16' if WHISPER_USE_GPU else 'int8',
+        'gpu_fallback_used': False,
+        'process_isolated': True,
     }
     if WHISPER_ENABLED:
         try:

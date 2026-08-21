@@ -11,6 +11,8 @@
             this._restartWebSpeech = false;
             this._webSpeechLanguage = 'en-US';
             this._webSpeechRestartTimer = null;
+            this._networkRetryTimer = null;
+            this._networkRetryPending = false;
             this._deviceId = '';
             this._primingStream = null;
             this._primingDeviceId = '';
@@ -239,12 +241,19 @@
 
             this._manualStop = false;
             this._restartWebSpeech = true;
-            this._networkRetryCount = 0;
+            // NOTE: _networkRetryCount is intentionally NOT reset here so that
+            // network-error backoff can escalate; it resets on a successful
+            // result (see onresult).
             this._webSpeechLanguage = this._mapLanguageCode(language);
             if (this._webSpeechRestartTimer) {
                 clearTimeout(this._webSpeechRestartTimer);
                 this._webSpeechRestartTimer = null;
             }
+            if (this._networkRetryTimer) {
+                clearTimeout(this._networkRetryTimer);
+                this._networkRetryTimer = null;
+            }
+            this._networkRetryPending = false;
 
             
             
@@ -330,8 +339,6 @@
                 }
 
                 if (event.error === 'network') {
-                    
-                    
                     this._networkRetryCount = (this._networkRetryCount || 0) + 1;
                     const count = this._networkRetryCount;
                     const backoffMs = count <= 3 ? 2000 : Math.min(count * 3000, 20000);
@@ -339,9 +346,15 @@
                     if (count >= 3) {
                         this._emitError('Speech recognition is having trouble reaching the network. Retrying\u2026');
                     }
-                    
+                    // Use a dedicated timer so the onend restart (which fires right
+                    // after) does not overwrite this backoff and cause duplicate
+                    // recognition.start() calls.
                     this._isAutoRestarting = true;
-                    this._webSpeechRestartTimer = setTimeout(() => {
+                    this._networkRetryPending = true;
+                    if (this._networkRetryTimer) clearTimeout(this._networkRetryTimer);
+                    this._networkRetryTimer = setTimeout(() => {
+                        this._networkRetryPending = false;
+                        this._networkRetryTimer = null;
                         if (!this._manualStop && this.sttEngine === 'web_speech_api') {
                             this._startWebSpeech(this._webSpeechLanguage);
                         }
@@ -368,17 +381,17 @@
             };
 
             this.recognition.onend = () => {
-                
                 const isAutoRestart = !this._manualStop && this._restartWebSpeech && this.sttEngine === 'web_speech_api';
-                
                 if (isAutoRestart) {
-                    
                     this._isAutoRestarting = true;
-                    this._webSpeechRestartTimer = setTimeout(() => {
-                        this._startWebSpeech(this._webSpeechLanguage);
-                    }, 100); 
+                    // If a network-retry backoff is already pending, do not
+                    // schedule a second restart here (avoids duplicate start).
+                    if (!this._networkRetryPending) {
+                        this._webSpeechRestartTimer = setTimeout(() => {
+                            this._startWebSpeech(this._webSpeechLanguage);
+                        }, 100);
+                    }
                 } else {
-                    
                     this.isListening = false;
                     this._emitStateChange('stopped');
                 }
@@ -389,9 +402,14 @@
             this._manualStop = true;
             this._restartWebSpeech = false;
             this._isAutoRestarting = false;
+            this._networkRetryPending = false;
             if (this._webSpeechRestartTimer) {
                 clearTimeout(this._webSpeechRestartTimer);
                 this._webSpeechRestartTimer = null;
+            }
+            if (this._networkRetryTimer) {
+                clearTimeout(this._networkRetryTimer);
+                this._networkRetryTimer = null;
             }
             if (this.recognition) {
                 this.recognition.stop();
@@ -404,15 +422,20 @@
         
 
         async _startWhisperRecording(language) {
+            if (this.isListening) return; // avoid double-recording on rapid clicks
+            this.isListening = true;
+            let stream = null;
             try {
                 const audioConstraints = this._deviceId
                     ? { deviceId: { exact: this._deviceId } }
                     : true;
-                
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
-                
+
+                stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+
                 this.audioChunks = [];
-                this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                const mimeType = this._pickSupportedMimeType();
+                this.mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+                const blobType = mimeType || 'audio/webm';
 
                 this.mediaRecorder.ondataavailable = (e) => {
                     if (e.data.size > 0) {
@@ -422,7 +445,8 @@
 
                 this.mediaRecorder.onstop = async () => {
                     stream.getTracks().forEach(t => t.stop());
-                    const blob = new Blob(this.audioChunks, { type: 'audio/webm' });
+                    stream = null;
+                    const blob = new Blob(this.audioChunks, { type: blobType });
                     if (this.sttEngine === 'ai_provider') {
                         await this._sendToProviderSTT(blob, language);
                     } else {
@@ -431,12 +455,33 @@
                 };
 
                 this.mediaRecorder.start();
-                this.isListening = true;
                 this._emitStateChange('listening');
             } catch (e) {
+                this.isListening = false;
+                if (stream) {
+                    stream.getTracks().forEach(t => t.stop());
+                }
                 console.error('[SpeechManager] Whisper recording failed:', e);
                 this._emitError(`Microphone access denied: ${e.message}`);
             }
+        }
+
+        _pickSupportedMimeType() {
+            if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+                return 'audio/webm';
+            }
+            const candidates = [
+                'audio/webm',
+                'audio/webm;codecs=opus',
+                'audio/mp4',
+                'audio/mp4;codecs=mp4a.40.2',
+            ];
+            for (const mime of candidates) {
+                if (MediaRecorder.isTypeSupported(mime)) {
+                    return mime;
+                }
+            }
+            return '';
         }
 
         _stopWhisperRecording() {
