@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live View — {{ title }}</title>
+    <script src="/static/socket.io.min.js"></script>
+    <style>
+        :root {
+            --bg: #1a1a24;
+            --bg-card: #252532;
+            --accent: #a855f7;
+            --accent2: #c084fc;
+            --text: #f0f0f5;
+            --muted: #a0a0b0;
+            --border: #2d2d3d;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-card);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        header h1 { font-size: 1.05rem; font-weight: 700; }
+        header .live-badge {
+            font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.08em; color: #22c55e;
+            border: 1px solid rgba(34,197,94,0.4); border-radius: 999px;
+            padding: 3px 10px; background: rgba(34,197,94,0.12);
+        }
+        main {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            max-width: 900px;
+            width: 100%;
+            margin: 0 auto;
+        }
+        .empty {
+            color: var(--muted);
+            text-align: center;
+            margin: auto;
+            font-size: 0.95rem;
+        }
+        .msg {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 14px;
+            animation: slideIn 0.25s ease-out;
+        }
+        .msg .speaker {
+            font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.06em; color: var(--accent2); margin-bottom: 4px;
+        }
+        .msg .source { color: var(--text); }
+        .msg .translated {
+            color: #f5e9ff;
+            margin-top: 4px;
+            border-left: 3px solid var(--accent);
+            padding-left: 10px;
+        }
+        .msg .meta { font-size: 0.68rem; color: var(--muted); margin-top: 6px; }
+        .error {
+            color: #f87171; text-align: center; margin: auto; font-size: 1rem;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body data-session-id="{{ session_id }}" data-access="{{ access }}" data-error="{{ '1' if error else '0' }}">
+    <header>
+        <h1>🎙️ {{ title }}</h1>
+        <span class="live-badge">● Live</span>
+    </header>
+    <main id="captions">
+        {% if error %}
+            <div class="error">{{ error }}</div>
+        {% else %}
+            <div class="empty">Waiting for live captions…</div>
+        {% endif %}
+    </main>
+
+    <script src="/static/live-view.js"></script>
+</body>
+</html>

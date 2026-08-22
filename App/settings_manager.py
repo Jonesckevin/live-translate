@@ -6,9 +6,9 @@ Stored as JSON file in /data/settings.json.
 import os
 import json
 import logging
-import tempfile
 
 import crypto_manager
+from storage_utils import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,9 @@ DEFAULT_SETTINGS = {
     'translation_engine': 'libretranslate',
     'translation_provider': 'anthropic',
     'translation_model': '',
+    'live_translation': 'stream',
+    'interim_debounce_left': 120,
+    'interim_debounce_right': 120,
     'stt_engine': 'web_speech_api',
     'stt_provider': 'groq',
     'stt_model': '',
@@ -41,22 +44,7 @@ DEFAULT_SETTINGS = {
 def _ensure_file():
     """Ensure settings file exists with defaults."""
     if not os.path.exists(SETTINGS_FILE):
-        _atomic_write_json(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
-
-def _atomic_write_json(path, data):
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix='.tmp_', suffix='.json', dir=directory or None)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        atomic_write_json(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
 
 def get_settings():
     """Get all user settings."""
@@ -70,34 +58,6 @@ def get_settings():
     except Exception as e:
         logger.error(f"Error reading settings: {e}")
         return DEFAULT_SETTINGS.copy()
-
-def save_settings(settings):
-    """Save user settings."""
-    _ensure_file()
-    try:
-        merged = DEFAULT_SETTINGS.copy()
-        merged.update(settings)
-
-        _atomic_write_json(SETTINGS_FILE, merged)
-        return {'success': True}
-    except Exception as e:
-        logger.error(f"Error saving settings: {e}")
-        return {'success': False, 'error': str(e)}
-
-def update_setting(key, value):
-    """Update a single setting."""
-    settings = get_settings()
-    settings[key] = value
-    return save_settings(settings)
-
-def reset_settings():
-    """Reset all settings to defaults."""
-    try:
-        _atomic_write_json(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
-        return {'success': True, 'settings': DEFAULT_SETTINGS.copy()}
-    except Exception as e:
-        logger.error(f"Error resetting settings: {e}")
-        return {'success': False, 'error': str(e)}
 
 def get_default_settings():
     """Get default settings (for comparison or reset preview)."""

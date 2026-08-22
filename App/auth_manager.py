@@ -12,10 +12,9 @@ import time
 import uuid
 import logging
 import threading
-from functools import wraps
 
 import jwt
-from flask import request, g, jsonify
+from flask import request
 
 import user_manager
 
@@ -92,36 +91,6 @@ def _extract_token():
 def get_current_user():
     """Return claims of the authenticated user, or None if unauthenticated."""
     return decode_token(_extract_token())
-
-def optional_auth(view):
-    """Attach g.current_user (may be None); never blocks the request."""
-    @wraps(view)
-    def wrapper(*args, **kwargs):
-        g.current_user = get_current_user()
-        return view(*args, **kwargs)
-    return wrapper
-
-def login_required(view):
-    @wraps(view)
-    def wrapper(*args, **kwargs):
-        user = get_current_user()
-        if not user:
-            return jsonify({'error': 'Authentication required'}), 401
-        g.current_user = user
-        return view(*args, **kwargs)
-    return wrapper
-
-def admin_required(view):
-    @wraps(view)
-    def wrapper(*args, **kwargs):
-        user = get_current_user()
-        if not user:
-            return jsonify({'error': 'Authentication required'}), 401
-        if user.get('role') != 'admin':
-            return jsonify({'error': 'Admin privileges required'}), 403
-        g.current_user = user
-        return view(*args, **kwargs)
-    return wrapper
 
 def client_ip():
     if TRUST_PROXY:

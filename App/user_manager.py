@@ -181,7 +181,7 @@ def create_user(username, password, email=None, role=None):
     if err:
         raise ValueError(err)
 
-    now = datetime.utcnow().isoformat() + 'Z'
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
     user_id = str(uuid.uuid4())
     password_hash = hash_password(password)
 
@@ -231,7 +231,7 @@ def list_users(limit=50, offset=0):
 def set_role(user_id, role):
     if role not in VALID_ROLES:
         raise ValueError('Invalid role')
-    now = datetime.utcnow().isoformat() + 'Z'
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
     with _write_lock, _connect() as conn:
         cur = conn.execute(
             'UPDATE users SET role = ?, updated_at = ? WHERE user_id = ?', (role, now, user_id)
@@ -242,7 +242,7 @@ def set_role(user_id, role):
 def set_status(user_id, status):
     if status not in VALID_STATUSES:
         raise ValueError('Invalid status')
-    now = datetime.utcnow().isoformat() + 'Z'
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
     with _write_lock, _connect() as conn:
         cur = conn.execute(
             'UPDATE users SET status = ?, updated_at = ? WHERE user_id = ?', (status, now, user_id)
@@ -265,7 +265,7 @@ def bump_token_version(user_id):
     """Invalidate all existing JWTs for a user by incrementing their version."""
     if not user_id:
         return
-    now = datetime.utcnow().isoformat() + 'Z'
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
     with _write_lock, _connect() as conn:
         conn.execute(
             'UPDATE users SET token_version = token_version + 1, updated_at = ? WHERE user_id = ?',
@@ -379,10 +379,11 @@ def archive_and_purge_guests():
         arc.commit()
 
     ids = tuple(r['user_id'] for r in expired)
+    placeholders = ','.join('?' * len(ids))
     with _write_lock, _connect() as conn:
-        conn.execute(f"DELETE FROM user_settings WHERE user_id IN ({','.join('?'*len(ids))})", ids)
+        conn.execute(f"DELETE FROM user_settings WHERE user_id IN ({placeholders})", ids)
         # passkeys are removed via ON DELETE CASCADE (foreign_keys=ON)
-        conn.execute(f"DELETE FROM users WHERE user_id IN ({','.join('?'*len(ids))})", ids)
+        conn.execute(f"DELETE FROM users WHERE user_id IN ({placeholders})", ids)
         conn.commit()
 
     logger.info('Archived and purged %d expired guest accounts', len(expired))
@@ -407,7 +408,7 @@ def save_user_settings(user_id, settings):
     """Persist a settings dict (with secrets already encrypted) for a user."""
     if not user_id:
         return False
-    now = datetime.utcnow().isoformat() + 'Z'
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
     payload = json.dumps(settings)
     with _write_lock, _connect() as conn:
         conn.execute(
@@ -463,25 +464,6 @@ def update_passkey_sign_count(cred_id, new_count):
             (int(new_count), now, cred_id),
         )
         conn.commit()
-
-
-def list_user_passkeys(user_id):
-    """Return passkey summaries for a user (no public key)."""
-    with _connect() as conn:
-        rows = conn.execute(
-            'SELECT cred_id, created_at, last_used_at, transports'
-            ' FROM passkeys WHERE user_id = ? ORDER BY created_at',
-            (user_id,),
-        ).fetchall()
-    return [
-        {
-            'cred_id': r['cred_id'],
-            'created_at': r['created_at'],
-            'last_used_at': r['last_used_at'],
-            'transports': json.loads(r['transports'] or '[]'),
-        }
-        for r in rows
-    ]
 
 
 def create_user_passwordless(username, email=None, role=None, forced_id=None):

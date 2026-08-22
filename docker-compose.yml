@@ -7,8 +7,6 @@ services:
     container_name: live-translate
     environment:
       # == Core Configuration ==
-      DATA_DIR: ${DATA_DIR:-./data}                               # Directory for persistent data storage
-      DOCKER_PORT: ${DOCKER_PORT:-9015}                           # Port to expose the app (e.g., 9015 -> http://localhost:9015)
       LOG_DIR: ${LOG_DIR:-/data/logs}                             # Directory for application logs
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}                         # Maximum file upload size in MB
       OFFLINE_MODE: ${OFFLINE_MODE:-auto}                         # offline|online|auto - online requires internet, auto detects
@@ -17,7 +15,7 @@ services:
       ALLOW_AUTH: ${ALLOW_AUTH:-true}                             # Enable/disable authentication system
       REQUIRE_AUTH: ${REQUIRE_AUTH:-true}                         # Force authentication for all users (set false for public access)
       ALLOW_USER_REGISTRATION: ${ALLOW_USER_REGISTRATION:-true}   # Allow new users to register accounts
-      ALLOW_GUEST_LOGIN: ${ALLOW_GUEST_LOGIN:-false}              # Allow anonymous guest access
+      ALLOW_GUEST_LOGIN: ${ALLOW_GUEST_LOGIN:-true}               # Allow anonymous guest access
       GUEST_TTL_HOURS: ${GUEST_TTL_HOURS:-24}                     # Guest session lifetime in hours
       JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-86400}                  # Login session timeout in seconds (86400 = 24 hours)
       LOGIN_RATE_MAX: ${LOGIN_RATE_MAX:-5}                        # Max login attempts before rate limit
@@ -47,15 +45,13 @@ services:
       LIBRETRANSLATE_SERVER_URL: ${LIBRETRANSLATE_SERVER_URL:-http://127.0.0.1:5001} # Fallback translation service URL
       
       ## == Logging & Analytics ==
-      LOG_SESSIONS: ${LOG_SESSIONS:-true}                           # Log user session activity
-      LOG_TRANSLATIONS: ${LOG_TRANSLATIONS:-true}                   # Log all translations performed
       ENABLE_SERVER_ANALYTICS: ${ENABLE_SERVER_ANALYTICS:-true}     # Enable server-side usage analytics
       GOOGLE_ANALYTICS_KEY: ${GOOGLE_ANALYTICS_KEY:-}               # Google Analytics tracking ID (optional)
       
       ## == Cloud LLM API Keys (SENSITIVE - set in Portainer/environment file) ==
       #OPENAI_API_KEY: ${OPENAI_API_KEY:-}                          # OpenAI API key for GPT models
       #ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}                    # Anthropic API key for Claude
-      #GEMINI_API_KEY: ${GEMINI_API_KEY:-}                          # Google Gemini API key
+      #GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}                          # Google Gemini API key
       #DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}                      # DeepSeek API key
       #COHERE_API_KEY: ${COHERE_API_KEY:-}                          # Cohere API key
       #GROQ_API_KEY: ${GROQ_API_KEY:-}                              # Groq API key for fast inference
@@ -78,16 +74,12 @@ services:
       TRUST_PROXY: ${TRUST_PROXY:-false}                           # Trust X-Forwarded-For header (enable if behind proxy)
       
       ## == WebSocket (Socket.io) Configuration ==
-      SOCKETIO_ASYNC_HANDLERS: ${SOCKETIO_ASYNC_HANDLERS:-true}    # Use async event handlers for better performance
       SOCKETIO_CORS_CREDENTIALS: ${SOCKETIO_CORS_CREDENTIALS:-true} # Allow cookies in CORS requests
       SOCKETIO_PING_TIMEOUT: ${SOCKETIO_PING_TIMEOUT:-60}          # Client ping timeout in seconds
       SOCKETIO_PING_INTERVAL: ${SOCKETIO_PING_INTERVAL:-25}        # Server ping interval in seconds
       
       ## == Feature Flags ==
-      ALLOW_CLIENT_API_KEYS: ${ALLOW_CLIENT_API_KEYS:-false}       # Allow users to provide their own API keys
-      
-      ## == Docker Build Configuration ==
-      PYTHON_BASE: ${PYTHON_BASE:-python:3.12-slim}                # Python base image (3.11-slim, 3.12-slim, etc.)
+      ALLOW_CLIENT_API_KEYS: ${ALLOW_CLIENT_API_KEYS:-true}        # Allow users to provide their own API keys
     ports:
       - "${DOCKER_PORT:-9015}:5000"
     volumes:
@@ -95,3 +87,12 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+          pids: 512

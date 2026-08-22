@@ -5,6 +5,7 @@ Ported from OCR-WebApp with translation-focused modifications.
 
 import os
 import re
+import socket
 import logging
 import ipaddress
 import requests
@@ -27,17 +28,53 @@ _CUSTOM_CONFIG_BLOCKED_HOSTS = {
 }
 
 
-def _is_ssrf_target(host):
-    """Return True when a host is loopback / link-local / metadata / internal."""
-    lowered = host.lower().rstrip('.')
-    if lowered in _CUSTOM_CONFIG_BLOCKED_HOSTS:
-        return True
-    try:
-        addr = ipaddress.ip_address(lowered)
-    except ValueError:
-        return False
+def _address_is_forbidden(addr):
+    """Return True when an IP address is loopback / link-local / metadata / internal."""
+    # Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) to its IPv4 form so the
+    # underlying loopback/link-local address is actually inspected.
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
     return (addr.is_loopback or addr.is_link_local or addr.is_unspecified
             or addr.is_multicast or addr.is_reserved)
+
+
+def _is_ssrf_target(host):
+    """Return True when a host resolves to loopback / link-local / internal."""
+    lowered = host.lower().strip().rstrip('.')
+    # Strip surrounding brackets used for IPv6 literals (e.g. [::1]).
+    if len(lowered) >= 2 and lowered.startswith('[') and lowered.endswith(']'):
+        lowered = lowered[1:-1]
+    if lowered in _CUSTOM_CONFIG_BLOCKED_HOSTS:
+        return True
+
+    candidates = []
+
+    # 1) Direct IP literal (handles 127.0.0.1, ::1, ::ffff:127.0.0.1, ...).
+    try:
+        candidates.append(ipaddress.ip_address(lowered))
+    except ValueError:
+        pass
+
+    # 2) Integer / shorthand IPv4 forms (e.g. 2130706433 -> 127.0.0.1).
+    if not candidates and lowered.isdigit():
+        try:
+            candidates.append(ipaddress.IPv4Address(int(lowered)))
+        except ValueError:
+            pass
+
+    # 3) Hostname: resolve and inspect every returned address. Rejecting
+    #    unresolvable names closes DNS-rebinding and invalid-host gaps.
+    if not candidates:
+        try:
+            for info in socket.getaddrinfo(lowered, None):
+                candidates.append(ipaddress.ip_address(info[4][0]))
+        except OSError:
+            return True
+
+    if not candidates:
+        return True
+
+    return any(_address_is_forbidden(c) for c in candidates)
 
 class LLMManager:
     """Unified LLM client supporting multiple providers."""
@@ -562,7 +599,7 @@ class LLMManager:
             return {'success': False, 'error': str(e)}
 
     @staticmethod
-    def translate(text, target_language, provider, model, api_key=None, custom_config=None, ai_auto_correct=True):
+    def translate(text, target_language, provider, model, api_key=None, custom_config=None, ai_auto_correct=True, context=None):
         instructions = [
             "1. **Preserve Structure:** Maintain all original formatting, line breaks, paragraphs, and spacing",
         ]
@@ -579,13 +616,28 @@ class LLMManager:
             f"{6 if ai_auto_correct else 5}. **Numbers & Dates:** Keep numbers, dates, measurements in their original format unless conversion is contextually necessary",
         ])
         
+        context_block = ''
+        if context:
+            context_lines = []
+            for item in context[-4:]:
+                src = (item.get('source_text') or item.get('source') or '').strip()
+                tgt = (item.get('translated_text') or item.get('translated') or '').strip()
+                if src and tgt:
+                    context_lines.append(f'{src}  =>  {tgt}')
+            if context_lines:
+                context_block = (
+                    '\n\n**Conversation Context (recently translated utterances):**\n'
+                    + '\n'.join(context_lines)
+                    + '\n\nKeep terminology, topics, and style consistent with this prior conversation when translating the new text below.'
+                )
+
         system_prompt = f"""You are an expert translator.
 
 **Your Task:** Translate the following text to {target_language} using accurate and professional setting style writing.
 
 **Critical Instructions:**
 {chr(10).join(instructions)}
-
+{context_block}
 **Output Requirements:**
 - Output ONLY the translated text
 - Do NOT add explanations, notes, or meta-commentary

@@ -4,12 +4,12 @@ Stored as JSON files in /data/sessions/.
 """
 
 import os
-import re
 import json
 import logging
-import tempfile
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+from storage_utils import is_safe_id as _is_safe_id, atomic_write_json as _atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -22,36 +22,11 @@ _UNSET = object()
 # REST + Socket.IO translation handlers cannot drop messages (lost updates).
 _session_lock = threading.Lock()
 
-_VALID_ID_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
-
-def _is_safe_id(value):
-    """Return True only for identifiers safe to interpolate into a file path."""
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and '..' not in value
-        and _VALID_ID_RE.match(value) is not None
-    )
-
 def _ensure_dir():
     os.makedirs(SESSION_DIR, exist_ok=True)
 
 def _ensure_icon_dir():
     os.makedirs(SESSION_ICON_DIR, exist_ok=True)
-
-def _atomic_write_json(path, data):
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix='.tmp_', suffix='.json', dir=directory)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
 
 def list_sessions():
     """List all sessions (metadata only)."""
@@ -98,8 +73,8 @@ def create_session(title, session_type='translate', languages=None, owner_id=Non
     when unset (anonymous), the session is world-accessible for backward compat."""
     _ensure_dir()
     import uuid
-    session_id = datetime.utcnow().strftime('%Y%m%d_%H%M%S') + '_' + str(uuid.uuid4())[:6]
-    now = datetime.utcnow().isoformat() + 'Z'
+    session_id = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S') + '_' + str(uuid.uuid4())[:6]
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
     if visibility not in ('private', 'shared', 'public'):
         visibility = 'private' if owner_id else 'public'
     data = {
@@ -136,15 +111,35 @@ def add_message(session_id, message):
         with open(fpath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if 'timestamp' not in message:
-            message['timestamp'] = datetime.utcnow().isoformat() + 'Z'
+            message['timestamp'] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
         source_text_preview = message.get('source_text', '')[:30]
         translated_text_preview = message.get('translated_text', '')[:30]
         logger.debug(f"Adding message to session {session_id}: {source_text_preview}... -> {translated_text_preview}...")
         data['messages'].append(message)
-        data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        data['updated_at'] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
         _atomic_write_json(fpath, data)
         logger.info(f"Message saved to session {session_id} | Total messages: {len(data['messages'])}")
         return data
+
+
+def set_recording(session_id, recording_filename):
+    """Attach (or clear, when None) a recording filename to a session."""
+    if not _is_safe_id(session_id):
+        return None
+    with _session_lock:
+        fpath = os.path.join(SESSION_DIR, f"{session_id}.json")
+        if not os.path.exists(fpath):
+            return None
+        with open(fpath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if recording_filename is None:
+            data.pop('recording_filename', None)
+        else:
+            data['recording_filename'] = recording_filename
+        data['updated_at'] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
+        _atomic_write_json(fpath, data)
+        return data
+
 
 def update_session(session_id, title=None, icon_filename=_UNSET, visibility=_UNSET, owner_id=_UNSET,
                    join_password_hash=_UNSET):
@@ -176,7 +171,7 @@ def update_session(session_id, title=None, icon_filename=_UNSET, visibility=_UNS
         if join_password_hash is not _UNSET:
             data['join_password_hash'] = join_password_hash
             updates.append('join_password_hash=<set>' if join_password_hash else 'join_password_hash=<cleared>')
-        data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+        data['updated_at'] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
         logger.debug(f"Updating session {session_id}: {', '.join(updates) if updates else 'no changes'}")
         _atomic_write_json(fpath, data)
         return data
@@ -234,7 +229,7 @@ def delete_session(session_id, delete_icon=True):
 def cleanup_old_sessions():
     """Remove sessions older than RETENTION_DAYS."""
     _ensure_dir()
-    cutoff = datetime.utcnow() - timedelta(days=RETENTION_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
     removed = 0
     for fname in os.listdir(SESSION_DIR):
         if not fname.endswith('.json'):
@@ -245,7 +240,7 @@ def cleanup_old_sessions():
                 data = json.load(f)
             updated = data.get('updated_at', data.get('created_at', ''))
             if updated:
-                ts = datetime.fromisoformat(updated.rstrip('Z'))
+                ts = datetime.fromisoformat(updated.rstrip('Z')).replace(tzinfo=timezone.utc)
                 if ts < cutoff:
                     os.remove(fpath)
                     removed += 1

@@ -19,7 +19,7 @@ import uuid
 import secrets
 import threading
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 import requests
 
@@ -88,7 +88,6 @@ elif CORS_ALLOWED_ORIGINS:
 
 SOCKETIO_PING_TIMEOUT = int(os.environ.get('SOCKETIO_PING_TIMEOUT', '60'))
 SOCKETIO_PING_INTERVAL = int(os.environ.get('SOCKETIO_PING_INTERVAL', '25'))
-SOCKETIO_ASYNC_HANDLERS = os.environ.get('SOCKETIO_ASYNC_HANDLERS', 'true').lower() == 'true'
 SOCKETIO_CORS_CREDENTIALS = os.environ.get('SOCKETIO_CORS_CREDENTIALS', 'true').lower() == 'true'
 
 socketio = SocketIO(
@@ -347,8 +346,6 @@ def get_api_key(provider, request_headers, user=None):
 
     if key_source == 'server' and server_key and authenticated:
         return server_key, 'server'
-    elif key_source == 'client' and client_key and ALLOW_CLIENT_API_KEYS:
-        return client_key, 'client'
     elif client_key and ALLOW_CLIENT_API_KEYS:
         return client_key, 'client'
     elif server_key and authenticated:
@@ -375,7 +372,7 @@ def _serialize_session(session_id, session_data):
 
 @app.route('/health')
 def health_check():
-    return jsonify({'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()})
+    return jsonify({'status': 'healthy', 'timestamp': datetime.now(timezone.utc).replace(tzinfo=None).isoformat()})
 
 @app.before_request
 def attach_request_id():
@@ -414,6 +411,14 @@ def enforce_require_auth():
     if path == '/' or path.startswith(_REQUIRE_AUTH_PUBLIC_PREFIXES):
         return None
     if path in _REQUIRE_AUTH_PUBLIC_API_ENDPOINTS:
+        return None
+    # Session icons are loaded by the browser via <img> tags, which cannot send
+    # the Authorization header. They are treated as public media (see
+    # get_session_icon). Only the GET is exempted; the upload POST still goes
+    # through the auth gate and the route-level access check.
+    if (request.method == 'GET'
+            and path.startswith('/api/sessions/')
+            and path.endswith('/icon')):
         return None
     if path.startswith('/api/') and auth_manager.get_current_user() is None:
         return jsonify({'error': 'Authentication required'}), 401
@@ -1122,7 +1127,7 @@ def list_sessions():
 @app.route('/api/sessions', methods=['POST'])
 def create_session():
     data = request.get_json() or {}
-    title = data.get('title', f"Session {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}")
+    title = data.get('title', f"Session {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}")
     session_type = data.get('type', 'translate')
     languages = data.get('languages', [])
     owner_id = None
@@ -1220,13 +1225,13 @@ def delete_session(session_id):
 
 @app.route('/api/sessions/<session_id>/icon')
 def get_session_icon(session_id):
+    # Session icons are public media (like the logo/identicon). Browsers render
+    # them via <img> tags, which cannot send the Authorization header, so they
+    # must be served without a token (enforce_require_auth exempts the GET in
+    # the same way). The session must still exist and have an icon set.
     session_data = session_manager.get_session(session_id)
     if session_data is None:
         return jsonify({'error': 'Session not found'}), 404
-
-    denied = _session_access_error(session_data, 'read', session_id)
-    if denied:
-        return denied
 
     icon_filename = session_data.get('icon_filename')
     if not icon_filename:
@@ -1234,36 +1239,20 @@ def get_session_icon(session_id):
 
     return send_from_directory(session_manager.SESSION_ICON_DIR, icon_filename)
 
-@app.route('/api/sessions/<session_id>/icon', methods=['POST'])
-def upload_session_icon(session_id):
-    app_logger.info(f"🖼️ Uploading icon for session: {session_id}")
-    session_data = session_manager.get_session(session_id)
-    if session_data is None:
-        return jsonify({'error': 'Session not found'}), 404
-
-    denied = _session_access_error(session_data, 'write', session_id)
-    if denied:
-        return denied
-
-    if 'file' not in request.files:
-        return jsonify({'error': 'Image file is required'}), 400
-
-    upload = request.files['file']
+def _save_session_icon(session_id, session_data, upload):
+    """Validate, persist, and clean up a session icon. Returns a Flask response."""
     if not upload or not upload.filename:
         return jsonify({'error': 'Invalid image file'}), 400
-
     _, ext = os.path.splitext(upload.filename)
     ext = ext.lower()
     if ext not in ALLOWED_SESSION_ICON_EXTENSIONS:
         return jsonify({'error': 'Unsupported image format. Use PNG, JPG, or GIF.'}), 400
-
     content_type = (upload.mimetype or '').lower()
     if content_type and content_type not in ALLOWED_SESSION_ICON_MIME_TYPES:
         return jsonify({'error': 'Unsupported image MIME type.'}), 400
-
     session_manager._ensure_icon_dir()
     safe_base = secure_filename(os.path.splitext(upload.filename)[0]) or 'icon'
-    new_filename = f"{session_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{safe_base}{ext}"
+    new_filename = f"{session_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{safe_base}{ext}"
     target_path = os.path.join(session_manager.SESSION_ICON_DIR, new_filename)
     upload.save(target_path)
 
@@ -1283,6 +1272,23 @@ def upload_session_icon(session_id):
             pass
 
     return jsonify({'success': True, 'session': _serialize_session(session_id, updated)})
+
+
+@app.route('/api/sessions/<session_id>/icon', methods=['POST'])
+def upload_session_icon(session_id):
+    app_logger.info(f"🖼️ Uploading icon for session: {session_id}")
+    session_data = session_manager.get_session(session_id)
+    if session_data is None:
+        return jsonify({'error': 'Session not found'}), 404
+
+    denied = _session_access_error(session_data, 'write', session_id)
+    if denied:
+        return denied
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'Image file is required'}), 400
+
+    return _save_session_icon(session_id, session_data, request.files['file'])
 
 @app.route('/api/sessions/<session_id>/messages', methods=['POST'])
 def add_session_message(session_id):
@@ -1337,6 +1343,160 @@ def join_session(code):
         'access': payload.get('access', 'view'),
         'share_code': code,
     })
+
+
+def _build_transcript_lines(msgs):
+    lines = []
+    for m in msgs:
+        speaker = (m.get('speaker') or m.get('panel') or 'Speaker').capitalize()
+        stamp = m.get('timestamp', '')
+        source = m.get('source_text', '')
+        translated = m.get('translated_text', '')
+        lines.append(f"[{stamp}] {speaker}: {source}")
+        if translated:
+            lines.append(f"    -> {translated}")
+    return lines
+
+
+def _build_fallback_summary(msgs):
+    speakers = {}
+    langs = set()
+    for m in msgs:
+        sp = (m.get('speaker') or m.get('panel') or 'Speaker').capitalize()
+        speakers[sp] = speakers.get(sp, 0) + 1
+        langs.add(f"{m.get('source_language')}->{m.get('target_language')}")
+    total = len(msgs)
+    lines = [
+        "Conversation summary (auto-generated, no LLM key):",
+        f"- {total} translated exchange(s) recorded.",
+        f"- Speakers: {', '.join(f'{k} ({v} messages)' for k, v in speakers.items()) or 'Unknown'}.",
+        f"- Language pairs: {', '.join(sorted(langs)) or 'N/A'}.",
+    ]
+    return '\n'.join(lines)
+
+
+@app.route('/api/sessions/<session_id>/transcript')
+def session_transcript(session_id):
+    session_data = session_manager.get_session(session_id)
+    if session_data is None:
+        return jsonify({'error': 'Session not found'}), 404
+    denied = _session_access_error(session_data, 'read', session_id)
+    if denied:
+        return denied
+    msgs = session_data.get('messages', [])
+    return jsonify({
+        'session_id': session_id,
+        'transcript': '\n'.join(_build_transcript_lines(msgs)),
+        'message_count': len(msgs),
+    })
+
+
+@app.route('/api/sessions/<session_id>/summary')
+def session_summary(session_id):
+    session_data = session_manager.get_session(session_id)
+    if session_data is None:
+        return jsonify({'error': 'Session not found'}), 404
+    denied = _session_access_error(session_data, 'read', session_id)
+    if denied:
+        return denied
+    msgs = session_data.get('messages', [])
+    if not msgs:
+        return jsonify({'summary': 'No messages to summarize yet.', 'engine': 'none', 'message_count': 0})
+    transcript = '\n'.join(_build_transcript_lines(msgs))
+    provider = request.args.get('provider') or config.get('llm', {}).get('default_provider', 'anthropic')
+    api_key, _ = get_api_key(provider, request.headers)
+    model = (request.args.get('model') or '').strip()
+    if api_key and provider in LLMManager.PROVIDER_CONFIGS:
+        try:
+            prompt = (
+                "Summarize this multilingual conversation transcript concisely as bullet points. "
+                "Include the main topics, any decisions, and who said what (speaker labels). "
+                "Keep it under 200 words.\n\nTRANSCRIPT:\n" + transcript
+            )
+            result = LLMManager.chat(provider, [{'role': 'user', 'content': prompt}],
+                                     model or None, api_key=api_key, temperature=0.3, max_tokens=600)
+            if result.get('success') and result.get('content'):
+                return jsonify({'summary': result['content'].strip(), 'engine': f'llm:{provider}', 'message_count': len(msgs)})
+        except Exception as e:
+            app_logger.warning(f"LLM summary failed: {e}")
+    return jsonify({'summary': _build_fallback_summary(msgs), 'engine': 'fallback', 'message_count': len(msgs)})
+
+
+@app.route('/api/qr')
+def qr_code():
+    text = (request.args.get('text') or '').strip()
+    if not text or len(text) > 2048:
+        return jsonify({'error': 'Invalid or missing text'}), 400
+    try:
+        import qrcode
+        import qrcode.image.svg
+        import io
+        qr = qrcode.QRCode(border=1, box_size=6)
+        qr.add_data(text)
+        qr.make(fit=True)
+        img = qr.make_image(image_factory=qrcode.image.svg.SvgPathImage)
+        buf = io.BytesIO()
+        img.save(buf)
+        return Response(buf.getvalue(), mimetype='image/svg+xml')
+    except Exception as e:
+        app_logger.error(f"QR generation failed: {e}")
+        return jsonify({'error': 'QR generation failed'}), 500
+
+
+@app.route('/live/<code>')
+def live_view_page(code):
+    payload = crypto_manager.verify(code, max_age=SHARE_CODE_TTL)
+    if not payload or not payload.get('sid'):
+        return render_template('live.html', session_id='', title='Invalid link', access='view',
+                               error='This live view link is invalid or has expired.'), 404
+    session_id = payload['sid']
+    session_data = session_manager.get_session(session_id)
+    if session_data is None:
+        return render_template('live.html', session_id='', title='Not found', access='view',
+                               error='Session not found.'), 404
+    title = session_data.get('title') or session_id
+    return render_template('live.html', session_id=session_id, title=title,
+                           access=payload.get('access', 'view'), error=None)
+
+
+RECORDING_DIR = os.environ.get('RECORDING_DIR', '/data/output')
+
+
+@app.route('/api/sessions/<session_id>/recording', methods=['POST'])
+def upload_session_recording(session_id):
+    session_data = session_manager.get_session(session_id)
+    if session_data is None:
+        return jsonify({'error': 'Session not found'}), 404
+    denied = _session_access_error(session_data, 'write', session_id)
+    if denied:
+        return denied
+    audio = request.files.get('audio')
+    if audio is None or not audio.filename:
+        return jsonify({'error': 'No audio file provided'}), 400
+    os.makedirs(RECORDING_DIR, exist_ok=True)
+    ext = os.path.splitext(audio.filename)[1] or '.webm'
+    if len(ext) > 10 or any(c in ext for c in ('/', '\\')):
+        ext = '.webm'
+    filename = f"{session_id}_rec_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}{ext}"
+    audio.save(os.path.join(RECORDING_DIR, filename))
+    session_manager.set_recording(session_id, filename)
+    app_logger.info(f"Recording saved for session {session_id}: {filename}")
+    return jsonify({'recording_url': f"/api/sessions/{session_id}/recording", 'filename': filename})
+
+
+@app.route('/api/sessions/<session_id>/recording')
+def get_session_recording(session_id):
+    session_data = session_manager.get_session(session_id)
+    if session_data is None:
+        return jsonify({'error': 'Session not found'}), 404
+    denied = _session_access_error(session_data, 'read', session_id)
+    if denied:
+        return denied
+    filename = session_data.get('recording_filename')
+    if not filename or os.path.basename(filename) != filename:
+        return jsonify({'error': 'No recording for this session'}), 404
+    return send_from_directory(RECORDING_DIR, filename)
+
 
 def admin_api(view):
     """Require auth enabled + a valid admin JWT; else 404 / 401 / 403."""
@@ -1486,36 +1646,9 @@ def admin_upload_session_icon(session_id):
         return jsonify({'error': 'Session not found'}), 404
     if 'file' not in request.files:
         return jsonify({'error': 'Image file is required'}), 400
-    upload = request.files['file']
-    if not upload or not upload.filename:
-        return jsonify({'error': 'Invalid image file'}), 400
-    _, ext = os.path.splitext(upload.filename)
-    ext = ext.lower()
-    if ext not in ALLOWED_SESSION_ICON_EXTENSIONS:
-        return jsonify({'error': 'Unsupported image format. Use PNG, JPG, or GIF.'}), 400
-    content_type = (upload.mimetype or '').lower()
-    if content_type and content_type not in ALLOWED_SESSION_ICON_MIME_TYPES:
-        return jsonify({'error': 'Unsupported image MIME type.'}), 400
-    session_manager._ensure_icon_dir()
-    safe_base = secure_filename(os.path.splitext(upload.filename)[0]) or 'icon'
-    new_filename = f"{session_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{safe_base}{ext}"
-    target_path = os.path.join(session_manager.SESSION_ICON_DIR, new_filename)
-    upload.save(target_path)
-    old_filename = session_data.get('icon_filename')
-    updated = session_manager.update_session(session_id, icon_filename=new_filename)
-    if updated is None:
-        try:
-            os.remove(target_path)
-        except Exception:
-            pass
-        return jsonify({'error': 'Session not found'}), 404
-    if old_filename and old_filename != new_filename:
-        try:
-            session_manager.delete_icon_file(old_filename)
-        except Exception:
-            pass
+    response = _save_session_icon(session_id, session_data, request.files['file'])
     app_logger.info(f"ADMIN: {g.current_user.get('username')} updated icon for session {session_id}")
-    return jsonify({'success': True, 'session': _serialize_session(session_id, updated)})
+    return response
 
 @app.route('/api/admin/sessions/<session_id>/icon', methods=['DELETE'])
 @admin_api
@@ -1895,26 +2028,31 @@ def handle_translate(data):
         api_key=api_key, custom_config=custom_config,
         glossary=glossary if glossary else None,
         ai_auto_correct=data.get('ai_auto_correct', True),
+        context=data.get('context'),
     )
 
     if policy_warning:
         result['policy_warning'] = policy_warning
 
     if not result.get('success') and engine == 'libretranslate' and not mode_state['offline'] and (provider or SERVER_API_KEYS.get('anthropic')):
-        app_logger.info(f"⚠ LibreTranslate failed, falling back to LLM provider")
         fallback_provider = provider or 'anthropic'
-        fallback_model = model or config.get('llm', {}).get('providers', {}).get(fallback_provider, {}).get('default_model')
         fallback_api_key = api_key or SERVER_API_KEYS.get(fallback_provider, '')
-        
-        result = TranslationManager.translate(
-            text=text, source_lang=source_lang, target_lang=target_lang,
-            engine='llm', provider=fallback_provider, model=fallback_model,
-            api_key=fallback_api_key, custom_config=custom_config,
-            glossary=glossary if glossary else None,
-            ai_auto_correct=data.get('ai_auto_correct', True),
-        )
-        if result.get('success'):
-            result['engine'] = f'llm:{fallback_provider} (fallback)'
+        # Only fall back to an LLM provider if we actually have an API key for it.
+        # Otherwise the provider would fail with a confusing "x-api-key header is
+        # required" error, masking the real LibreTranslate failure.
+        if fallback_api_key:
+            app_logger.info(f"⚠ LibreTranslate failed, falling back to LLM provider ({fallback_provider})")
+            fallback_model = model or config.get('llm', {}).get('providers', {}).get(fallback_provider, {}).get('default_model')
+            result = TranslationManager.translate(
+                text=text, source_lang=source_lang, target_lang=target_lang,
+                engine='llm', provider=fallback_provider, model=fallback_model,
+                api_key=fallback_api_key, custom_config=custom_config,
+                glossary=glossary if glossary else None,
+                ai_auto_correct=data.get('ai_auto_correct', True),
+                context=data.get('context'),
+            )
+            if result.get('success'):
+                result['engine'] = f'llm:{fallback_provider} (fallback)'
 
     if result.get('success'):
         app_logger.info(f"✓ Translation successful: {source_lang} → {target_lang} | Result length: {len(result.get('translated_text', ''))} chars")
@@ -1942,7 +2080,9 @@ def handle_translate(data):
                     'target_language': target_lang,
                     'engine': result.get('engine', engine),
                     'panel': panel,
-                    'timestamp': datetime.utcnow().isoformat() + 'Z',
+                    'speaker': panel,
+                    'offset_ms': data.get('offset_ms'),
+                    'timestamp': datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z',
                 }
                 session_manager.add_message(ws_session_id, saved_msg)
                 socketio.emit(

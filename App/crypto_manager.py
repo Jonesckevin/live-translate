@@ -21,8 +21,6 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 logger = logging.getLogger(__name__)
 
-_SHARE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-
 _SECRETS_KEY = os.environ.get('SECRETS', '').strip()
 _EPHEMERAL = False
 if not _SECRETS_KEY:
@@ -35,17 +33,6 @@ def is_ephemeral():
     """Return True when SECRETS was not provided and a throwaway key is in use."""
     return _EPHEMERAL
 
-def has_secrets():
-    """Return True when a persistent SECRETS key is configured."""
-    return not _EPHEMERAL
-
-def generate_share_code(length=8):
-    """Return a cryptographically-secure, unambiguous alphanumeric share code."""
-    return ''.join(_secrets.choice(_SHARE_ALPHABET) for _ in range(length))
-
-def generate_token(nbytes=32):
-    """Return a URL-safe cryptographically-secure random token."""
-    return _secrets.token_urlsafe(nbytes)
 
 def sign(payload):
     """Serialize and sign a payload (str or JSON-serializable) into a token."""
@@ -66,10 +53,6 @@ def verify(token, max_age=None):
     except BadSignature:
         logger.warning("Rejected token with invalid signature")
         return None
-
-def constant_time_compare(a, b):
-    """Timing-attack-resistant comparison of two strings."""
-    return _secrets.compare_digest(str(a), str(b))
 
 _fernet = None
 

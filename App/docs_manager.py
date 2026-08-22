@@ -3,8 +3,9 @@ Docs Manager - discover and render the Markdown documents in App/Docs for the
 in-app documentation viewer (`/docs`).
 
 Only files inside the Docs directory are served, matched against a strict slug
-pattern to prevent path traversal. Markdown is converted to HTML server-side;
-the documents are trusted project files (not user input).
+pattern to prevent path traversal. Markdown is converted to HTML server-side and
+then sanitized with nh3 (defense-in-depth); the documents themselves are trusted
+project files, not user input.
 """
 
 import os
@@ -72,9 +73,14 @@ def render(slug):
         return None
 
     import markdown
+    import nh3
     html = markdown.markdown(
         text, extensions=['fenced_code', 'tables', 'sane_lists', 'toc'], output_format='html5',
     )
+    # Sanitize even though the docs are trusted, so a future feature that
+    # renders user-supplied Markdown (or a tampered doc file) cannot inject
+    # script/event-handler content into the page.
+    html = nh3.clean(html)
     return _rewrite_internal_links(html)
 
 def _rewrite_internal_links(html):

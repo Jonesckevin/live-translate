@@ -86,7 +86,7 @@
                 "requires_key": true
             },
             "gemini": {
-                "name": "Gemini",
+                "name": "Google Gemini",
                 "base_url": "https://generativelanguage.googleapis.com/v1beta",
                 "default_model": "gemini-1.5-flash",
                 "requires_key": true

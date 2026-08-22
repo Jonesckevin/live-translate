@@ -134,11 +134,11 @@ class TranslationManager:
             return {'success': False, 'error': str(e), 'engine': 'libretranslate'}
 
     @staticmethod
-    def translate_llm(text, source_lang, target_lang, provider, model, api_key=None, custom_config=None, ai_auto_correct=True):
+    def translate_llm(text, source_lang, target_lang, provider, model, api_key=None, custom_config=None, ai_auto_correct=True, context=None):
         """Translate using an LLM provider."""
         # Convert language code to full language name for LLM
         lang_label = _get_language_name(target_lang)
-        result = LLMManager.translate(text, lang_label, provider, model, api_key, custom_config, ai_auto_correct)
+        result = LLMManager.translate(text, lang_label, provider, model, api_key, custom_config, ai_auto_correct, context=context)
         if result.get('success'):
             return {
                 'success': True,
@@ -150,7 +150,7 @@ class TranslationManager:
     @staticmethod
     def translate(text, source_lang, target_lang, engine='libretranslate',
                   provider=None, model=None, api_key=None, custom_config=None,
-                  glossary=None, timeout=30, ai_auto_correct=True):
+                  glossary=None, timeout=30, ai_auto_correct=True, context=None):
         """
         Unified translation entry point.
         engine: 'libretranslate' or 'llm'
@@ -175,7 +175,7 @@ class TranslationManager:
                 return {'success': False, 'error': 'LLM provider and model required'}
             logger.debug(f"Using LLM engine: provider={provider}, model={model}")
             result = TranslationManager.translate_llm(
-                processed_text, source_lang, target_lang, provider, model, api_key, custom_config, ai_auto_correct
+                processed_text, source_lang, target_lang, provider, model, api_key, custom_config, ai_auto_correct, context
             )
         else:
             logger.error(f"Unknown engine: {engine}")

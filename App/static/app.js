@@ -101,6 +101,7 @@
                     push_to_talk_right: '',
                     voice_mode: 'single',
                     playback_voices: [],
+                    tts_auto_speak: false,
                 };
                 window.userSettings = userSettings;
                 window.updateSetting = updateSetting;
@@ -773,6 +774,37 @@
             }
         });
 
+        const liveTranslationSel = document.getElementById('liveTranslationMode');
+        if (liveTranslationSel) {
+            liveTranslationSel.value = userSettings.live_translation || 'stream';
+            liveTranslationSel.addEventListener('change', () => {
+                userSettings.live_translation = liveTranslationSel.value;
+                void updateSetting('live_translation', liveTranslationSel.value);
+                showToast(
+                    liveTranslationSel.value === 'stream'
+                        ? 'Live translation: streaming words, corrected in place'
+                        : 'Live translation: post (accurate, waits for utterance)',
+                    'success'
+                );
+            });
+        }
+
+        const bindInterimDebounce = (selId, side) => {
+            const sel = document.getElementById(selId);
+            if (!sel) return;
+            sel.value = String(getInterimDebounceMs(side));
+            sel.addEventListener('change', () => {
+                const ms = parseInt(sel.value, 10);
+                if (!Number.isFinite(ms) || ms < 1) return;
+                const key = side === 'right' ? 'interim_debounce_right' : 'interim_debounce_left';
+                userSettings[key] = ms;
+                void updateSetting(key, ms);
+                showToast(`${side === 'right' ? 'Right' : 'Left'} live translation wait set to ${ms}ms`, 'success');
+            });
+        };
+        bindInterimDebounce('interimDebounceLeft', 'left');
+        bindInterimDebounce('interimDebounceRight', 'right');
+
         
         document.getElementById('convLeftSend').addEventListener('click', () => {
             void sendConvMessage('left');
@@ -803,6 +835,9 @@
         
         setupConvTTS('left');
         setupConvTTS('right');
+
+        
+        setupRecordButton();
 
         
         
@@ -955,6 +990,9 @@
             resetLiveState(side);
             speechInst.setDeviceId(deviceSelect ? deviceSelect.value : '');
             speechInst.onResult = (result) => {
+                if (result.language && statusEl) {
+                    statusEl.textContent = `Detected: ${result.language}`;
+                }
                 if (result.interim) {
                     state.interimText = result.interim.trim();
                     const liveText = `${state.finalText} ${state.interimText}`.trim();
@@ -1300,6 +1338,93 @@
     
     
 
+    function getTTSAutoSpeak() {
+        return !!(window.userSettings && window.userSettings.tts_auto_speak);
+    }
+
+    function maybeAutoSpeakTranslation(side, text) {
+        if (!getTTSAutoSpeak() || !text) return;
+        if (!window.speechManager) return;
+        const langSel = document.getElementById(`conv${cap(side)}Lang`);
+        const lang = langSel ? langSel.value : 'en';
+        try {
+            window.speechManager.stopSpeaking();
+            window.speechManager.speak(text, lang);
+        } catch (e) {
+            // Ignore TTS errors during auto-speak.
+        }
+    }
+
+    const recordingState = { mediaRecorder: null, chunks: [], stream: null, recording: false, startedAt: null };
+
+    function getRecordingOffsetMs() {
+        if (!recordingState.recording || !recordingState.startedAt) return null;
+        return Math.max(0, Date.now() - recordingState.startedAt);
+    }
+
+    function pickRecordingMimeType() {
+        if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') return '';
+        const candidates = ['audio/webm', 'audio/webm;codecs=opus', 'audio/mp4', 'audio/mp4;codecs=mp4a.40.2'];
+        for (const c of candidates) { if (MediaRecorder.isTypeSupported(c)) return c; }
+        return '';
+    }
+
+    function setupRecordButton() {
+        const btn = document.getElementById('convRecord');
+        if (btn) btn.addEventListener('click', toggleRecording);
+    }
+
+    async function toggleRecording() {
+        const btn = document.getElementById('convRecord');
+        if (!recordingState.recording) {
+            try {
+                if (!currentSessionId) await ensureConversationSession();
+            } catch (e) {
+                showToast('Select a session first', 'warning');
+                return;
+            }
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                recordingState.chunks = [];
+                const mime = pickRecordingMimeType();
+                const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+                recordingState.mediaRecorder = rec;
+                recordingState.stream = stream;
+                rec.ondataavailable = (e) => { if (e.data.size > 0) recordingState.chunks.push(e.data); };
+                rec.onstop = () => { uploadRecording(); };
+                rec.start();
+                recordingState.recording = true;
+                recordingState.startedAt = Date.now();
+                if (btn) { btn.textContent = '⏹ Stop'; btn.classList.add('recording'); btn.title = 'Stop recording'; }
+                showToast('Recording started', 'success');
+            } catch (e) {
+                showToast('Microphone access denied', 'error');
+            }
+        } else {
+            try { recordingState.mediaRecorder?.stop(); } catch (e) {}
+            recordingState.recording = false;
+            if (btn) { btn.textContent = '⏺ Record'; btn.classList.remove('recording'); btn.title = 'Record this session'; }
+        }
+    }
+
+    async function uploadRecording() {
+        const blob = new Blob(recordingState.chunks, { type: 'audio/webm' });
+        recordingState.chunks = [];
+        if (recordingState.stream) recordingState.stream.getTracks().forEach(t => t.stop());
+        recordingState.stream = null;
+        if (!currentSessionId) return;
+        if (!blob.size) { showToast('Recording was empty', 'warning'); return; }
+        const formData = new FormData();
+        formData.append('audio', blob, 'recording.webm');
+        try {
+            const r = await fetch(`/api/sessions/${currentSessionId}/recording`, { method: 'POST', body: formData });
+            if (r.ok) { showToast('Recording saved. Open the session to play it back.', 'success'); }
+            else { const d = await r.json().catch(() => ({})); showToast(d.error || 'Failed to save recording', 'error'); }
+        } catch (e) {
+            showToast('Failed to save recording', 'error');
+        }
+    }
+
     async function populateMicDeviceSelects() {
         const selects = [
             document.getElementById('convLeftMicDevice'),
@@ -1357,6 +1482,7 @@
             debounceTimer: null,
             sourceBubble: null,
             targetBubble: null,
+            context: [],
         };
     }
 
@@ -1384,7 +1510,7 @@
         const cleanText = (text || '').trim();
         if (!cleanText) return;
 
-        if (!isFinal && cleanText.length < 3) return;
+        if (!isFinal && getLiveTranslationMode() === 'post') return;
 
         const state = convLiveState[side];
         if (cleanText === state.lastSentText && !isFinal) return;
@@ -1399,9 +1525,11 @@
             return;
         }
 
+        // The wait is user-tunable per side (Settings > Live Translation Wait)
+        // so each speaker can balance live responsiveness vs. update frequency.
         state.debounceTimer = setTimeout(() => {
             sendLiveConversationTranslate(side, cleanText, false);
-        }, 250);
+        }, getInterimDebounceMs(side));
     }
 
     function isCloudProvider(providerId) {
@@ -1411,6 +1539,16 @@
 
     function isForceOfflineEnabled() {
         return !!(runtimeOfflineStatus.forceOffline || userSettings.force_offline);
+    }
+
+    function getLiveTranslationMode() {
+        return (userSettings && userSettings.live_translation) || 'stream';
+    }
+
+    function getInterimDebounceMs(side) {
+        const key = side === 'right' ? 'interim_debounce_right' : 'interim_debounce_left';
+        const v = parseInt((userSettings && userSettings[key]), 10);
+        return Number.isFinite(v) && v > 0 ? v : 120;
     }
 
     function warnCloudDisabledIfNeeded() {
@@ -1544,6 +1682,8 @@
             interim: !isFinal,
             request_id: requestId,
             ai_auto_correct: getAIAutoCorrectSetting(),
+            context: state.context,
+            offset_ms: getRecordingOffsetMs(),
         });
 
         
@@ -1634,6 +1774,7 @@
             api_key: apiKey,
             api_key_source: apiKeySource,
             ai_auto_correct: getAIAutoCorrectSetting(),
+            offset_ms: getRecordingOffsetMs(),
         });
 
         
@@ -1673,6 +1814,18 @@
                 !!effectiveResult.interim && !!effectiveResult.success
             );
 
+            if (!effectiveResult.interim && effectiveResult.success) {
+                maybeAutoSpeakTranslation(otherSide, translatedText);
+                // Keep a small rolling buffer of finalized utterances so LLM
+                // translations can stay consistent with recent conversation
+                // topics and terminology.
+                state.context.push({
+                    source_text: effectiveResult.original_text || '',
+                    translated_text: translatedText,
+                });
+                if (state.context.length > 4) state.context.splice(0, state.context.length - 4);
+            }
+
             if (!effectiveResult.interim) {
                 if (state.sourceBubble) state.sourceBubble.classList.remove('live');
                 if (state.targetBubble) state.targetBubble.classList.remove('live');
@@ -1711,6 +1864,7 @@
                 translated = window.llmAPIManager.postProcessTranslation(translated);
             }
             addConvBubble(otherSide, translated, 'translated');
+            maybeAutoSpeakTranslation(otherSide, translated);
             // The server already persists successful non-interim translations to
             // the session (session_manager.add_message), so the client must NOT
             // POST here again or every message would be duplicated in history.
@@ -1741,6 +1895,12 @@
         meta.textContent = timestamp
             ? new Date(timestamp).toLocaleTimeString()
             : new Date().toLocaleTimeString();
+        if (type === 'original') {
+            const speaker = document.createElement('div');
+            speaker.className = 'msg-speaker';
+            speaker.textContent = cap(side);
+            bubble.appendChild(speaker);
+        }
         bubble.appendChild(body);
         bubble.appendChild(meta);
         container.appendChild(bubble);
@@ -1775,9 +1935,21 @@
         document.getElementById('renameSession').addEventListener('click', renameCurrentSession);
         document.getElementById('deleteSession').addEventListener('click', deleteCurrentSession);
         document.getElementById('exportSession').addEventListener('click', exportCurrentSession);
+        document.getElementById('transcriptSession').addEventListener('click', exportCurrentTranscript);
+        document.getElementById('summarySession').addEventListener('click', showCurrentSessionSummary);
+        document.getElementById('sessionLiveViewBtn').addEventListener('click', openLiveViewForCurrentSession);
+        document.getElementById('closeSummaryModal').addEventListener('click', closeSummaryModal);
         void loadSessions().then(() => {
             void promptForInitialSessionSelection();
         });
+    }
+
+    function closeSummaryModal() {
+        const modal = document.getElementById('summaryModal');
+        if (!modal) return;
+        modal.classList.remove('active');
+        modal.setAttribute('aria-hidden', 'true');
+        if (!document.querySelector('.app-modal.active')) document.body.classList.remove('modal-open');
     }
 
     async function promptForInitialSessionSelection() {
@@ -2067,15 +2239,41 @@
             
             const container = document.getElementById('sessionMessages');
             container.innerHTML = '';
+            const recSection = document.getElementById('sessionRecording');
+            const recAudio = document.getElementById('sessionRecordingAudio');
+            if (data.recording_filename && recAudio && recSection) {
+                recAudio.src = `/api/sessions/${sessionId}/recording`;
+                recSection.style.display = '';
+            } else if (recSection) {
+                recSection.style.display = 'none';
+            }
             for (const msg of (data.messages || [])) {
                 const el = document.createElement('div');
                 el.className = 'session-msg';
+                if (Number.isFinite(Number(msg.offset_ms))) el.dataset.offset = String(msg.offset_ms);
                 el.innerHTML = `
                     <div class="source">${escapeHtml(msg.source_text || '')}</div>
                     <div class="translation">${escapeHtml(msg.translated_text || '')}</div>
-                    <div class="meta">${msg.source_language} → ${msg.target_language} · ${msg.engine || ''} · ${formatDate(msg.timestamp)}</div>
+                    <div class="meta">${msg.speaker ? `${escapeHtml(msg.speaker)} · ` : ''}${msg.source_language} → ${msg.target_language} · ${msg.engine || ''} · ${formatDate(msg.timestamp)}</div>
                 `;
                 container.appendChild(el);
+            }
+
+            const syncCaptionsToAudio = (ms) => {
+                const items = Array.from(container.querySelectorAll('.session-msg'));
+                let activeEl = null;
+                for (let i = 0; i < items.length; i++) {
+                    const off = items[i].dataset.offset;
+                    if (off == null) continue;
+                    const offMs = Number(off);
+                    const next = items[i + 1];
+                    const nextMs = next && next.dataset.offset != null ? Number(next.dataset.offset) : Infinity;
+                    if (ms >= offMs && ms < nextMs) { activeEl = items[i]; break; }
+                }
+                items.forEach(el => el.classList.toggle('active', el === activeEl));
+            };
+            if (recAudio) {
+                recAudio.ontimeupdate = () => syncCaptionsToAudio(recAudio.currentTime * 1000);
             }
         } catch (e) {
             showToast('Failed to load session', 'error');
@@ -2203,6 +2401,65 @@
         a.download = `session-${currentSessionId}.txt`;
         a.click();
         URL.revokeObjectURL(url);
+    }
+
+    async function exportCurrentTranscript() {
+        if (!currentSessionId) return;
+        const r = await fetch(`/api/sessions/${currentSessionId}/transcript`);
+        if (!r.ok) { showToast('Failed to load transcript', 'error'); return; }
+        const d = await r.json();
+        const blob = new Blob([d.transcript || ''], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `transcript-${currentSessionId}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+
+    async function showCurrentSessionSummary() {
+        if (!currentSessionId) return;
+        showToast('Generating summary…', 'info', 2000);
+        let r;
+        try {
+            r = await fetch(`/api/sessions/${currentSessionId}/summary`);
+        } catch (e) {
+            showToast('Summary request failed', 'error');
+            return;
+        }
+        if (!r.ok) { showToast('Failed to generate summary', 'error'); return; }
+        const d = await r.json();
+        const content = document.getElementById('summaryContent');
+        const modal = document.getElementById('summaryModal');
+        if (!content || !modal) return;
+        content.textContent = d.summary || 'No summary available.';
+        modal.classList.add('active');
+        modal.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('modal-open');
+    }
+
+    async function openLiveViewForCurrentSession() {
+        if (!currentSessionId) { showToast('Select a session first', 'warning'); return; }
+        let d;
+        try {
+            const r = await fetch(`/api/sessions/${currentSessionId}/share`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ access: 'view' }),
+            });
+            if (!r.ok) { showToast('Failed to create live view link', 'error'); return; }
+            d = await r.json();
+        } catch (e) {
+            showToast('Failed to create live view link', 'error');
+            return;
+        }
+        const liveUrl = `${location.origin}/live/${d.share_code}`;
+        window.open(liveUrl, '_blank');
+        const qrRow = document.getElementById('sessionQrRow');
+        const qrImg = document.getElementById('sessionQrImage');
+        if (qrRow && qrImg) {
+            qrImg.src = `/api/qr?text=${encodeURIComponent(liveUrl)}`;
+            qrRow.style.display = '';
+        }
     }
 
     function triggerSessionIconUpload() {
@@ -3007,6 +3264,15 @@
                 const selected = Array.from(playbackVoicesSel.selectedOptions).map(opt => opt.value);
                 window.speechManager.setPlaybackVoices(selected);
                 showToast(`Selected ${selected.length} playback voice(s)`, 'success');
+            });
+        }
+
+        const ttsAutoSpeak = document.getElementById('ttsAutoSpeak');
+        if (ttsAutoSpeak) {
+            ttsAutoSpeak.checked = getTTSAutoSpeak();
+            ttsAutoSpeak.addEventListener('change', () => {
+                void updateSetting('tts_auto_speak', ttsAutoSpeak.checked);
+                showToast(ttsAutoSpeak.checked ? 'Auto-speak enabled' : 'Auto-speak disabled', 'success');
             });
         }
     }

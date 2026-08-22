@@ -9,7 +9,7 @@ A self-hosted real-time translation web application with speech-to-text, virtual
 ## Features
 
 - **Text Translation** – Default uses LibreTranslate Framework to Translate between 37+ languages with auto-detection
-- **Dual Engine** – LibreTranslate (Argos, self-hosted, offline) + Optional LLM providers (OpenAI, Anthropic, Gemini, Ollama, LM Studio, DeepSeek, Cohere, Groq, Grok, Mistral, Perplexity)
+- **Dual Engine** – LibreTranslate (Argos, self-hosted, offline) + Optional LLM providers (OpenAI, Anthropic, Google Gemini, Ollama, LM Studio, DeepSeek, Cohere, Groq, Grok, Mistral, Perplexity)
 - **Live Conversation Mode** – Dual-panel real-time translation with per-panel language and microphone selection
 - **Speech-to-Text** – Web Speech API (browser-native) + optional Whisper (server-side via faster-whisper) + optional AI provider STT (for supported providers/models)
 - **Custom Glossaries** – Create term glossaries for consistent translations
@@ -35,9 +35,14 @@ cd live-translate
 docker compose up -d --build
 ```
 
-During image build, Whisper models `tiny`, `base`, `small`, `medium`, and `large-v3` are pre-downloaded into an internal seed cache, then copied into `/data/whisper-model` on first container start. This avoids runtime re-downloads and persists models across restarts/rebuilds.
+The default Whisper model (`tiny`) ships in `data/whisper-model` so it is usable
+offline. Larger models (`base`, `small`, `medium`, `large-v3`) are downloaded at
+runtime on first use and cached in `/data/whisper-model`, so they persist across
+restarts but require internet to fetch the first time.
 
-Embedded LibreTranslate language package downloads are also persisted by mounting `./data/cache/libretranslate-local` to `/root/.local`, so Argos language models are reused across container rebuilds/restarts.
+Embedded LibreTranslate downloads Argos language models into the container's
+`/data/.local` cache (the app runs as non-root with `HOME=/data`), so they are
+persisted under `./data` and reused across container rebuilds/restarts.
 
 Open **http://localhost:9015** in your browser.
 

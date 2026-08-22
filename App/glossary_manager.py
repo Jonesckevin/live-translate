@@ -4,13 +4,13 @@ Stored as JSON files in /data/glossaries/.
 """
 
 import os
-import re
 import json
 import logging
 import csv
-import tempfile
 from io import StringIO
-from datetime import datetime
+from datetime import datetime, timezone
+
+from storage_utils import is_safe_id as _is_safe_id, atomic_write_json as _atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -18,33 +18,8 @@ GLOSSARY_DIR = os.environ.get('GLOSSARY_DIR', '/data/glossaries')
 SINGLE_GLOSSARY_ID = 'Glossary'
 SINGLE_GLOSSARY_NAME = 'Glossary'
 
-_VALID_ID_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
-
-def _is_safe_id(value):
-    """Return True only for identifiers safe to interpolate into a file path."""
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and '..' not in value
-        and _VALID_ID_RE.match(value) is not None
-    )
-
 def _ensure_dir():
     os.makedirs(GLOSSARY_DIR, exist_ok=True)
-
-def _atomic_write_json(path, data):
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix='.tmp_', suffix='.json', dir=directory)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
 
 def list_glossaries():
     """List all glossaries."""
@@ -89,7 +64,7 @@ def create_glossary(name, source_language, target_language, entries=None, glossa
         glossary_id = str(uuid.uuid4())[:8]
     elif not _is_safe_id(glossary_id):
         raise ValueError('Invalid glossary id')
-    now = datetime.utcnow().isoformat() + 'Z'
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
     existing_created_at = None
     fpath = os.path.join(GLOSSARY_DIR, f"{glossary_id}.json")
     if os.path.exists(fpath):
@@ -109,33 +84,6 @@ def create_glossary(name, source_language, target_language, entries=None, glossa
     }
     _atomic_write_json(fpath, data)
     return {'id': glossary_id, **data}
-
-def import_glossary_from_text(name, source_language, target_language, text, filename=''):
-    """Import glossary entries from JSON/CSV/TSV/TXT text and create a glossary."""
-    if not text or not text.strip():
-        raise ValueError('Glossary file is empty')
-
-    lower_name = (filename or '').lower()
-    if lower_name.endswith('.json'):
-        fmt = 'json'
-    elif lower_name.endswith('.tsv'):
-        fmt = 'tsv'
-    elif lower_name.endswith('.csv'):
-        fmt = 'csv'
-    else:
-        fmt = 'txt'
-
-    entries = _parse_entries(text, fmt)
-    if not entries:
-        raise ValueError('No valid glossary entries were found')
-
-    final_name = (name or '').strip() or _default_name_from_filename(filename)
-    return create_glossary(
-        name=final_name,
-        source_language=source_language,
-        target_language=target_language,
-        entries=entries,
-    )
 
 def replace_single_glossary_from_text(source_language, target_language, text, filename=''):
     """Replace all glossary data with a single glossary named 'Glossary'."""
@@ -174,12 +122,6 @@ def replace_single_glossary_from_text(source_language, target_language, text, fi
         entries=entries,
         glossary_id=SINGLE_GLOSSARY_ID,
     )
-
-def _default_name_from_filename(filename):
-    base = os.path.basename(filename or '')
-    if not base:
-        return f"Glossary {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
-    return os.path.splitext(base)[0] or 'Imported Glossary'
 
 def _parse_entries(text, fmt):
     if fmt == 'json':
@@ -281,7 +223,7 @@ def update_glossary(glossary_id, name=None, entries=None):
         data['name'] = name
     if entries is not None:
         data['entries'] = entries
-    data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+    data['updated_at'] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
     _atomic_write_json(fpath, data)
     return data
 

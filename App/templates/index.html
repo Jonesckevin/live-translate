@@ -75,6 +75,7 @@
                 <div class="conversation-session-actions">
                     <button class="btn-secondary btn-session-icon" id="convNewSession" title="Create new session" aria-label="Create new session">+</button>
                     <button class="btn-secondary btn-session-icon" id="openSessionsModal" title="Open sessions list" aria-label="Open sessions list">☰</button>
+                    <button class="btn-secondary btn-record" id="convRecord" title="Record this session's audio">⏺ Record</button>
                 </div>
             </div>
 
@@ -159,7 +160,13 @@
                     <div class="session-actions">
                         <button class="btn-secondary" id="renameSession">Rename</button>
                         <button class="btn-secondary" id="exportSession">Export</button>
+                        <button class="btn-secondary" id="transcriptSession">Transcript</button>
+                        <button class="btn-secondary" id="summarySession">Summary</button>
+                        <button class="btn-secondary" id="sessionLiveViewBtn">🔗 Live View</button>
                         <button class="btn-danger" id="deleteSession">Delete</button>
+                    </div>
+                    <div class="session-qr-row" id="sessionQrRow" style="display:none;">
+                        <img id="sessionQrImage" alt="QR code for the live view link" />
                     </div>
                 </div>
                 
@@ -186,6 +193,12 @@
                         <button class="btn-secondary" id="sessionShareBtn" type="button">📋 Copy share code</button>
                     </div>
                     <div class="session-vis-feedback" id="sessionVisFeedback"></div>
+                </div>
+                <div class="session-recording" id="sessionRecording" style="display:none;">
+                    <div class="section-title-inline">
+                        <h4>🎙️ Recording</h4>
+                    </div>
+                    <audio id="sessionRecordingAudio" controls></audio>
                 </div>
                 <div class="session-messages" id="sessionMessages"></div>
             </div>
@@ -239,6 +252,31 @@
                     <div class="setting-row translation-llm-controls" style="display:none;">
                         <label>Model</label>
                         <select id="convModel"></select>
+                    </div>
+                    <div class="setting-row">
+                        <label for="liveTranslationMode" title="Stream: translate words live as they are spoken, then replace them with the accurate full translation when the utterance finishes. Post: wait for the whole utterance, then translate once (fewer requests, more accurate).">Live Translation Mode</label>
+                        <select id="liveTranslationMode" title="Stream: live word-by-word, corrected in place when the utterance ends. Post: translate only after a full utterance (fewer requests, more accurate).">
+                            <option value="stream">Stream (live words)</option>
+                            <option value="post">Post (accurate)</option>
+                        </select>
+                    </div>
+                    <div class="setting-row">
+                        <label for="interimDebounceLeft" title="Left speaker: how long to wait after the last spoken word before sending the interim translation. Shorter = words appear faster (good for slower speakers / a very live feel). Longer = words batch into larger phrases (fewer updates, good for fast speakers).">Live Translation Wait — Left</label>
+                        <select id="interimDebounceLeft" title="Left speaker interim translation delay. Fast: each word appears almost immediately. Balanced: batches a few words. Relaxed: waits for a longer phrase (fewer, more stable updates).">
+                            <option value="60">Very fast (each word)</option>
+                            <option value="120">Fast (recommended)</option>
+                            <option value="250">Balanced</option>
+                            <option value="450">Relaxed (fewer updates)</option>
+                        </select>
+                    </div>
+                    <div class="setting-row">
+                        <label for="interimDebounceRight" title="Right speaker: how long to wait after the last spoken word before sending the interim translation. Shorter = words appear faster (good for slower speakers / a very live feel). Longer = words batch into larger phrases (fewer updates, good for fast speakers).">Live Translation Wait — Right</label>
+                        <select id="interimDebounceRight" title="Right speaker interim translation delay. Fast: each word appears almost immediately. Balanced: batches a few words. Relaxed: waits for a longer phrase (fewer, more stable updates).">
+                            <option value="60">Very fast (each word)</option>
+                            <option value="120">Fast (recommended)</option>
+                            <option value="250">Balanced</option>
+                            <option value="450">Relaxed (fewer updates)</option>
+                        </select>
                     </div>
                 </div>
 
@@ -316,6 +354,11 @@
                             <p class="settings-desc playback-help-text">Select one or more voices (Ctrl/Cmd+click for multiple). All voices are processed locally.</p>
                         </div>
                     </div>
+
+                    <div class="setting-row">
+                        <label for="ttsAutoSpeak" title="Automatically speak each new translated message aloud using your selected playback voices.">Auto-speak translations</label>
+                        <input type="checkbox" id="ttsAutoSpeak" />
+                    </div>
                 </div>
 
                 
@@ -350,6 +393,21 @@
                     <div class="glossary-list" id="glossaryList"></div>
                 </div>
             </div>
+            </div>
+        </div>
+    </div>
+
+    
+    <div class="app-modal" id="summaryModal" aria-hidden="true">
+        <div class="app-modal-dialog">
+            <div class="app-modal-header">
+                <div class="section-title-inline">
+                    <h2>Session Summary</h2>
+                </div>
+                <button class="icon-btn" id="closeSummaryModal" title="Close">✕</button>
+            </div>
+            <div class="app-modal-body">
+                <pre class="summary-content" id="summaryContent"></pre>
             </div>
         </div>
     </div>

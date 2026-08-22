@@ -9,7 +9,7 @@
                 lmstudio: { name: 'LM Studio', type: 'local', requiresKey: false },
                 openai: { name: 'OpenAI', type: 'cloud', requiresKey: true },
                 anthropic: { name: 'Anthropic', type: 'cloud', requiresKey: true },
-                gemini: { name: 'Gemini', type: 'cloud', requiresKey: true },
+                gemini: { name: 'Google Gemini', type: 'cloud', requiresKey: true },
                 deepseek: { name: 'DeepSeek', type: 'cloud', requiresKey: true },
                 cohere: { name: 'Cohere', type: 'cloud', requiresKey: true },
                 groq: { name: 'Groq', type: 'cloud', requiresKey: true },

@@ -10,8 +10,9 @@ without editing environment variables or restarting the container.
 import os
 import json
 import logging
-import tempfile
 import threading
+
+from storage_utils import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -34,21 +35,6 @@ _ALLOWED_TYPES = {
     'max_sessions_per_user': int,
     'cache_retention_days': int,
 }
-
-def _atomic_write(path, data):
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix='.tmp_', suffix='.json', dir=directory or None)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
 
 def get_settings():
     """Return merged settings (defaults overlaid with any persisted values)."""
@@ -82,13 +68,8 @@ def save_settings(partial):
         current[key] = value
     with _lock:
         try:
-            _atomic_write(ADMIN_SETTINGS_FILE, current)
+            atomic_write_json(ADMIN_SETTINGS_FILE, current)
         except Exception as e:
             logger.error("Error saving admin settings: %s", e)
             return {'success': False, 'error': 'Failed to persist settings'}
     return {'success': True}
-
-def reset_settings():
-    with _lock:
-        _atomic_write(ADMIN_SETTINGS_FILE, DEFAULT_SETTINGS.copy())
-    return {'success': True, 'settings': DEFAULT_SETTINGS.copy()}
