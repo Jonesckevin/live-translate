@@ -152,6 +152,7 @@ SERVER_API_KEYS = {
     'grok': os.environ.get('GROK_API_KEY', ''),
     'mistral': os.environ.get('MISTRAL_API_KEY', ''),
     'perplexity': os.environ.get('PERPLEXITY_API_KEY', ''),
+    'meta': os.environ.get('META_API_KEY', ''),
 }
 
 class RequestContextFilter(logging.Filter):

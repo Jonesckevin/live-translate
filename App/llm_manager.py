@@ -165,6 +165,12 @@ class LLMManager:
             'base_url': 'https://api.perplexity.ai',
             'chat_endpoint': '/chat/completions',
         },
+        'meta': {
+            'type': 'openai',
+            'base_url': 'https://api.meta.ai/v1',
+            'models_endpoint': '/models',
+            'chat_endpoint': '/chat/completions',
+        },
     }
 
     @staticmethod

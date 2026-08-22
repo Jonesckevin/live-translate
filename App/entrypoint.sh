@@ -57,16 +57,19 @@ run_as_app() {
 if [ "${LIBRETRANSLATE_LOCAL_ENABLED:-true}" = "true" ]; then
   echo "Starting embedded LibreTranslate at 127.0.0.1:5001"
   export HF_HOME=/data/cache/huggingface
+  # Tee LibreTranslate's output to a persisted log AND the container stdout so
+  # first-run Argos model downloads are visible in `docker compose logs`.
   run_as_app /opt/libretranslate-venv/bin/libretranslate \
     --host 127.0.0.1 \
     --port 5001 \
     --disable-web-ui \
-    > /tmp/libretranslate.log 2>&1 &
+    2>&1 | tee /data/logs/libretranslate.log &
   LIBRE_PID=$!
-  echo "LibreTranslate started (PID: $LIBRE_PID)"
+  echo "LibreTranslate started (PID: $LIBRE_PID); logs: /data/logs/libretranslate.log"
   sleep 5
   if ! kill -0 "$LIBRE_PID" 2>/dev/null; then
-    echo "WARNING: LibreTranslate failed to start"
+    echo "WARNING: LibreTranslate failed to start. Last log lines:"
+    tail -n 20 /data/logs/libretranslate.log 2>/dev/null || true
     echo "Note: Using LLM providers as translation backend via automatic fallback"
   fi
 fi

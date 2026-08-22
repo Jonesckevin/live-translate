@@ -9,7 +9,7 @@ A self-hosted real-time translation web application with speech-to-text, virtual
 ## Features
 
 - **Text Translation** – Default uses LibreTranslate Framework to Translate between 37+ languages with auto-detection
-- **Dual Engine** – LibreTranslate (Argos, self-hosted, offline) + Optional LLM providers (OpenAI, Anthropic, Google Gemini, Ollama, LM Studio, DeepSeek, Cohere, Groq, Grok, Mistral, Perplexity)
+- **Dual Engine** – LibreTranslate (Argos, self-hosted, offline) + Optional LLM providers (OpenAI, Anthropic, Google Gemini, Meta AI, Ollama, LM Studio, DeepSeek, Cohere, Groq, Grok, Mistral, Perplexity)
 - **Live Conversation Mode** – Dual-panel real-time translation with per-panel language and microphone selection
 - **Speech-to-Text** – Web Speech API (browser-native) + optional Whisper (server-side via faster-whisper) + optional AI provider STT (for supported providers/models)
 - **Custom Glossaries** – Create term glossaries for consistent translations

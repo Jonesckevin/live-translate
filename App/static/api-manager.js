@@ -16,6 +16,7 @@
                 grok: { name: 'Grok (X.AI)', type: 'cloud', requiresKey: true },
                 mistral: { name: 'Mistral AI', type: 'cloud', requiresKey: true },
                 perplexity: { name: 'Perplexity', type: 'cloud', requiresKey: true },
+                meta: { name: 'Meta AI', type: 'cloud', requiresKey: true },
             };
             this.apiKeys = {};
             this.apiKeyPriority = 'client';

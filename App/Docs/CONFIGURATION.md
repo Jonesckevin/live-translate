@@ -80,7 +80,8 @@ Managed from the admin panel (`/admin`) and stored in `ADMIN_SETTINGS_FILE`
 
 Set any of: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` (Google Gemini),
 `DEEPSEEK_API_KEY`, `COHERE_API_KEY`, `GROQ_API_KEY`, `GROK_API_KEY`,
-`MISTRAL_API_KEY`, `PERPLEXITY_API_KEY`. Provide via environment or a secrets
+`MISTRAL_API_KEY`, `PERPLEXITY_API_KEY`, `META_API_KEY` (Meta AI). Provide via
+environment or a secrets
 manager — never commit them. (Note: the Google Gemini provider reads `GOOGLE_API_KEY`.)
 
 ## Paths
