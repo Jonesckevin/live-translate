@@ -369,6 +369,7 @@
         initHeaderCustomization();
         initSocket();
         initModals();
+        initHamburger();
         renderAISettings(); 
         initConversationTab();
         initSessionsTab();
@@ -517,6 +518,43 @@
     
     
     
+
+    function initHamburger() {
+        const btn = document.getElementById('hamburgerBtn');
+        const menu = document.getElementById('headerMenu');
+        if (!btn || !menu) return;
+
+        const closeMenu = () => {
+            menu.classList.remove('open');
+            btn.classList.remove('open');
+            btn.setAttribute('aria-expanded', 'false');
+        };
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = menu.classList.toggle('open');
+            btn.classList.toggle('open', isOpen);
+            btn.setAttribute('aria-expanded', String(isOpen));
+        });
+
+        // Close when clicking outside the menu.
+        document.addEventListener('click', (e) => {
+            if (menu.classList.contains('open') &&
+                !menu.contains(e.target) && !btn.contains(e.target)) {
+                closeMenu();
+            }
+        });
+
+        // Close on Escape.
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeMenu();
+        });
+
+        // Close after picking an action (Present / Glossary / Settings).
+        menu.addEventListener('click', (e) => {
+            if (e.target.closest('.btn-secondary')) closeMenu();
+        });
+    }
 
     function initModals() {
         const sessionsBtn = document.getElementById('openSessionsModal');

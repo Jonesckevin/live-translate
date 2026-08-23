@@ -2,11 +2,21 @@
 <html lang="en" data-lt-require-auth="{{ 'true' if require_auth else 'false' }}"{% if join_code %} data-lt-join-code="{{ join_code | e }}"{% endif %}>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Live Translate</title>
+    <meta name="description" content="Self-hosted real-time translation: dual-panel conversation, speech-to-text, glossaries, and multi-provider LLM support.">
+    <meta name="theme-color" content="#1a1a24">
+    <meta name="color-scheme" content="dark">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Live Translate">
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' style='stop-color:%23a855f7'/><stop offset='100%25' style='stop-color:%23c084fc'/></linearGradient></defs><rect width='100' height='100' rx='20' fill='%231a1a24'/><text x='50' y='70' font-family='Arial,sans-serif' font-size='55' font-weight='bold' text-anchor='middle' fill='url(%23g)'>LT</text></svg>">
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=3">
     <script src="/static/socket.io.min.js"></script>
+    <script defer src="/static/pwa.js"></script>
     {% if ga_key %}
     
     <script nonce="{{ csp_nonce }}" src="https://www.googletagmanager.com/gtag/js?id={{ ga_key }}"></script>
@@ -42,14 +52,17 @@
             <span class="app-subtitle"></span>
         </div>
         <div class="header-right">
-            <label class="header-toggle">
-                <input type="checkbox" id="aiAutoCorrectHeader" title="Only works when LLMs are connected and selected in the options" />
-                <span class="toggle-label">✨ Auto-Correct</span>
-            </label>
-            <div id="authHeader" class="auth-header" style="display:none;"></div>
-            <button class="btn-secondary" id="openPresentationMode" title="Present the translated output on a fullscreen display for a wider audience">📺 Present</button>
-            <button class="btn-secondary" id="openGlossaryModal" title="View the glossary">📖 Glossary</button>
-            <button class="btn-secondary" id="openSettingsModal">⚙️ Settings</button>
+            <button class="hamburger-btn" id="hamburgerBtn" aria-label="Toggle menu" aria-expanded="false" aria-controls="headerMenu" title="Menu">☰</button>
+            <nav class="header-menu" id="headerMenu" aria-label="Main menu">
+                <label class="header-toggle">
+                    <input type="checkbox" id="aiAutoCorrectHeader" title="Only works when LLMs are connected and selected in the options" />
+                    <span class="toggle-label">✨ Auto-Correct</span>
+                </label>
+                <div id="authHeader" class="auth-header" style="display:none;"></div>
+                <button class="btn-secondary" id="openPresentationMode" title="Present the translated output on a fullscreen display for a wider audience">📺 Present</button>
+                <button class="btn-secondary" id="openGlossaryModal" title="View the glossary">📖 Glossary</button>
+                <button class="btn-secondary" id="openSettingsModal">⚙️ Settings</button>
+            </nav>
         </div>
     </header>
 

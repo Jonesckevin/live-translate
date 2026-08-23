@@ -468,6 +468,28 @@ def index():
     return render_template('index.html', ga_key=GOOGLE_ANALYTICS_KEY, csp_nonce=nonce,
                            require_auth=REQUIRE_AUTH, join_code=None)
 
+
+@app.route('/sw.js')
+def service_worker():
+    """PWA service worker.
+
+    Served from the root path so its scope covers the whole app. Response is
+    never cached by the browser so SW updates are picked up on reload.
+    """
+    response = send_from_directory('static', 'sw.js', mimetype='application/javascript')
+    response.headers['Service-Worker-Allowed'] = '/'
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+
+@app.route('/manifest.json')
+def web_manifest():
+    """PWA web app manifest (name, icons, theme, display mode)."""
+    response = send_from_directory('static', 'manifest.json',
+                                   mimetype='application/manifest+json')
+    response.headers['Cache-Control'] = 'public, max-age=3600'
+    return response
+
 @app.route('/docs')
 def docs_index():
     return render_template('docs.html', docs=docs_manager.list_docs(),
