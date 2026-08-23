@@ -561,7 +561,7 @@
 
         
 
-        speak(text, language = 'en') {
+        speak(text, language = 'en', onEnd = null) {
             if (!this.synthesis) return;
             this.synthesis.cancel();
 
@@ -574,6 +574,9 @@
             const selectedVoices = voices.filter(v => this.playbackVoiceIds.includes(v.voiceURI));
             const voice = this._pickVoiceForPlayback(selectedVoices, voices, language);
             if (voice) utterance.voice = voice;
+
+            utterance.onend = () => { if (typeof onEnd === 'function') onEnd(); };
+            utterance.onerror = () => { if (typeof onEnd === 'function') onEnd(); };
 
             this.synthesis.speak(utterance);
         }

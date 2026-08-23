@@ -1300,18 +1300,43 @@
         const ttsBtn = document.getElementById(`conv${cap(side)}TTS`);
         if (!ttsBtn) return;
 
+        let reading = false;
+        const defaultLabel = ttsBtn.textContent;
+        const defaultTitle = ttsBtn.title;
+
+        const resetBtn = () => {
+            reading = false;
+            ttsBtn.classList.remove('reading');
+            ttsBtn.disabled = false;
+            ttsBtn.textContent = defaultLabel;
+            ttsBtn.title = defaultTitle;
+        };
+
+        const setReading = () => {
+            reading = true;
+            ttsBtn.classList.add('reading');
+            ttsBtn.disabled = false;
+            ttsBtn.textContent = '⏹';
+            ttsBtn.title = 'Stop reading';
+        };
+
         ttsBtn.addEventListener('click', () => {
+            // Toggle: if already reading, stop and reset to the speaker icon.
+            if (reading) {
+                window.speechManager?.stopSpeaking();
+                resetBtn();
+                return;
+            }
+
             const messagesContainer = document.getElementById(`conv${cap(side)}Messages`);
             if (!messagesContainer) return;
 
-            
             const bubbles = messagesContainer.querySelectorAll('.conv-message');
             if (bubbles.length === 0) {
                 showToast('No messages to read', 'info');
                 return;
             }
 
-            
             const lastBubble = bubbles[bubbles.length - 1];
             const msgText = lastBubble.querySelector('.msg-text')?.textContent?.trim();
             if (!msgText) {
@@ -1319,27 +1344,16 @@
                 return;
             }
 
-            
             const langSelect = document.getElementById(`conv${cap(side)}Lang`);
             const lang = langSelect ? langSelect.value : 'en';
 
-            
             if (window.speechManager) {
-                ttsBtn.classList.add('reading');
-                ttsBtn.disabled = true;
-                
+                setReading();
                 try {
-                    window.speechManager.speak(msgText, lang);
-                    
-                    
-                    setTimeout(() => {
-                        ttsBtn.classList.remove('reading');
-                        ttsBtn.disabled = false;
-                    }, 5000);
+                    window.speechManager.speak(msgText, lang, resetBtn);
                 } catch (e) {
                     showToast(`TTS error: ${e.message}`, 'error');
-                    ttsBtn.classList.remove('reading');
-                    ttsBtn.disabled = false;
+                    resetBtn();
                 }
             } else {
                 showToast('Speech synthesis not available', 'error');
