@@ -55,8 +55,10 @@ run_as_app() {
 }
 
 if [ "${LIBRETRANSLATE_LOCAL_ENABLED:-true}" = "true" ]; then
-  echo "Starting embedded LibreTranslate at 127.0.0.1:5001"
+  echo "Pre-installing Argos/LibreTranslate models for advertised languages"
   export HF_HOME=/data/cache/huggingface
+  run_as_app /opt/libretranslate-venv/bin/python /app/preinstall_models.py || echo "WARNING: model pre-download had errors; continuing"
+  echo "Starting embedded LibreTranslate at 127.0.0.1:5001"
   # Let LibreTranslate stream directly to the container stdout so its output
   # (including first-run Argos model downloads) appears in `docker compose logs`.
   # Docker's logging driver handles size/rotation, so no unbounded file is kept.

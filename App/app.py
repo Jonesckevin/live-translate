@@ -495,6 +495,69 @@ def join_session_page(code):
     return render_template('index.html', ga_key=GOOGLE_ANALYTICS_KEY, csp_nonce=nonce,
                            require_auth=REQUIRE_AUTH, join_code=code)
 
+# Cache of supported LibreTranslate language codes (refreshed periodically).
+_supported_langs_cache = {'codes': None, 'ts': 0}
+_SUPPORTED_LANGS_TTL = 300  # seconds
+
+# LibreTranslate reports some languages under codes that differ from the
+# short codes used in config.json's available_languages. Map them back so the
+# filter does not drop supported languages.
+_LT_CODE_ALIASES = {
+    'zh-Hans': {'zh'},
+    'zh-Hant': {'zh'},
+}
+
+
+def get_supported_language_codes():
+    """Return the set of language codes the embedded LibreTranslate can translate.
+
+    Union of source codes and their available targets reported by
+    LibreTranslate's /languages endpoint, plus any config-code aliases for
+    those codes. Cached briefly to avoid hammering the endpoint on every
+    request. Empty set when LibreTranslate is unreachable (callers then keep
+    the configured list unchanged).
+    """
+    now = time.time()
+    if (_supported_langs_cache['codes'] is not None
+            and (now - _supported_langs_cache['ts']) < _SUPPORTED_LANGS_TTL):
+        return _supported_langs_cache['codes']
+
+    codes = set()
+    result = TranslationManager.get_languages()
+    if result.get('success'):
+        for lang in result.get('languages', []):
+            if not isinstance(lang, dict):
+                continue
+            c = lang.get('code')
+            if c:
+                codes.add(c)
+                codes.update(_LT_CODE_ALIASES.get(c, ()))
+            for t in lang.get('targets') or []:
+                if isinstance(t, str) and t:
+                    codes.add(t)
+                    codes.update(_LT_CODE_ALIASES.get(t, ()))
+
+    _supported_langs_cache['codes'] = codes
+    _supported_langs_cache['ts'] = now
+    return codes
+
+
+def _filter_available_languages():
+    """Return available_languages limited to those LibreTranslate supports.
+
+    Always keeps 'auto'. If LibreTranslate is unreachable (empty supported set),
+    returns the full configured list so the UI is not broken during startup.
+    """
+    translation_cfg = config.get('translation', {})
+    avail = translation_cfg.get('available_languages', [])
+    supported = get_supported_language_codes()
+    if supported:
+        avail = [l for l in avail
+                 if l.get('code') == 'auto' or l.get('code') in supported]
+        translation_cfg = {**translation_cfg, 'available_languages': avail}
+    return translation_cfg
+
+
 @app.route('/api/config')
 def get_app_config():
     api_keys_info = {}
@@ -506,7 +569,7 @@ def get_app_config():
 
     return jsonify({
         'app': config.get('app', {}),
-        'translation': config.get('translation', {}),
+        'translation': _filter_available_languages(),
         'libretranslate': config.get('libretranslate', {}),
         'llm': {
             'default_provider': config.get('llm', {}).get('default_provider', 'ollama'),
@@ -926,7 +989,7 @@ def get_languages():
         return jsonify(result)
     return jsonify({
         'success': True,
-        'languages': config.get('translation', {}).get('available_languages', []),
+        'languages': _filter_available_languages().get('available_languages', []),
         'source': 'config',
     })
 
