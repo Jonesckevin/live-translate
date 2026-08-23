@@ -825,7 +825,7 @@ def translate_text():
 
     glossary = None
     if config.get('glossary', {}).get('enabled', True):
-        glossary = glossary_manager.get_entries_for_pair(source_lang, target_lang)
+        glossary = glossary_manager.get_entries_for(source_lang, target_lang)
 
     app_logger.info(f"📝 REST API translation: {source_lang} → {target_lang} via {engine}{f' ({provider})' if provider else ''} | Text: {text[:50]}...")
     analytics.incr('translations')
@@ -898,7 +898,7 @@ def translate_multi():
     for lang in target_langs:
         glossary = None
         if config.get('glossary', {}).get('enabled', True):
-            glossary = glossary_manager.get_entries_for_pair(source_lang, lang)
+            glossary = glossary_manager.get_entries_for(source_lang, lang)
         results[lang] = TranslationManager.translate(
             text=text, source_lang=source_lang, target_lang=lang,
             engine=engine, provider=provider, model=model,
@@ -1793,7 +1793,10 @@ def get_defaults():
 
 @app.route('/api/glossaries')
 def list_glossaries():
-    return jsonify({'glossaries': glossary_manager.list_glossaries()})
+    return jsonify({
+        'glossaries': glossary_manager.list_glossaries(),
+        'concept_glossaries': glossary_manager.list_concept_glossaries(),
+    })
 
 @app.route('/api/glossaries', methods=['POST'])
 def create_glossary():
@@ -1838,6 +1841,24 @@ def import_glossary():
         app_logger.warning(f"✗ Failed to import glossary: Unable to decode file {upload.filename}")
         return jsonify({'error': 'Unable to decode glossary file'}), 400
 
+    # Concept-based JSON glossaries (a top-level "concepts" array) are stored
+    # as-is so the concept resolver can use them bidirectionally.
+    if (upload.filename or '').lower().endswith('.json'):
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict) and isinstance(parsed.get('concepts'), list):
+            try:
+                result = glossary_manager.save_concept_glossary(parsed)
+                app_logger.info(f"✓ Concept glossary imported: {result.get('name')} ({result.get('concept_count')} concepts)")
+                return jsonify(result), 201
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+            except Exception as e:
+                app_logger.exception(f'Failed to import concept glossary: {str(e)}')
+                return jsonify({'error': 'Failed to import glossary'}), 500
+
     try:
         result = glossary_manager.replace_single_glossary_from_text(
             source_language=source_language,
@@ -1876,7 +1897,24 @@ def glossary_template():
             'ext': 'txt',
         },
         'json': {
-            'content': '{\n  "hello": "bonjour",\n  "thank you": "merci"\n}\n',
+            'content': (
+                '{\n'
+                '  "name": "My Glossary",\n'
+                '  "domain": "",\n'
+                '  "canonical_language": "en",\n'
+                '  "top_description": "Optional description",\n'
+                '  "concepts": [\n'
+                '    {\n'
+                '      "concept_id": "example_concept",\n'
+                '      "terms": [\n'
+                '        { "language": "en", "term": "example term", "part_of_speech": "noun", "description": "English definition", "example_sentence": "", "usage_note": "" },\n'
+                '        { "language": "ja", "term": "用語", "part_of_speech": "名詞", "description": "日本語の定義", "example_sentence": "", "usage_note": "" }\n'
+                '      ],\n'
+                '      "prohibited": { "ja": [], "en": [] }\n'
+                '    }\n'
+                '  ]\n'
+                '}\n'
+            ),
             'mimetype': 'application/json',
             'ext': 'json',
         },
@@ -1901,12 +1939,44 @@ def get_glossary(glossary_id):
 @app.route('/api/glossaries/<glossary_id>', methods=['PUT'])
 def update_glossary(glossary_id):
     data = request.get_json() or {}
-    result = glossary_manager.update_glossary(
-        glossary_id, name=data.get('name'), entries=data.get('entries'),
-    )
+    stored = glossary_manager.get_glossary(glossary_id)
+    if stored is not None and isinstance(stored.get('concepts'), list):
+        result = glossary_manager.update_concept_glossary(glossary_id, data)
+    else:
+        result = glossary_manager.update_glossary(
+            glossary_id, name=data.get('name'), entries=data.get('entries'),
+        )
     if result is None:
         return jsonify({'error': 'Glossary not found'}), 404
     return jsonify(result)
+
+@app.route('/api/glossaries/<glossary_id>/concepts', methods=['POST'])
+def add_glossary_concept(glossary_id):
+    concept = request.get_json() or {}
+    try:
+        result = glossary_manager.add_concept(glossary_id, concept)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if result is None:
+        return jsonify({'error': 'Glossary not found or not a concept glossary'}), 404
+    return jsonify({'success': True, 'concept_count': len(result.get('concepts', []))})
+
+@app.route('/api/glossaries/<glossary_id>/concepts/<concept_id>', methods=['DELETE'])
+def delete_glossary_concept(glossary_id, concept_id):
+    if glossary_manager.delete_concept(glossary_id, concept_id):
+        return jsonify({'success': True})
+    return jsonify({'error': 'Concept not found'}), 404
+
+@app.route('/api/glossaries/<glossary_id>/export')
+def export_glossary(glossary_id):
+    data = glossary_manager.get_concept_glossary(glossary_id)
+    if data is None:
+        data = glossary_manager.get_glossary(glossary_id)
+    if data is None:
+        return jsonify({'error': 'Glossary not found'}), 404
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    headers = {'Content-Disposition': f'attachment; filename={glossary_id}.json'}
+    return Response(content, mimetype='application/json', headers=headers)
 
 @app.route('/api/glossaries/<glossary_id>', methods=['DELETE'])
 def delete_glossary(glossary_id):
@@ -2018,7 +2088,7 @@ def handle_translate(data):
 
     glossary = None
     if config.get('glossary', {}).get('enabled', True):
-        glossary = glossary_manager.get_entries_for_pair(source_lang, target_lang)
+        glossary = glossary_manager.get_entries_for(source_lang, target_lang)
 
     app_logger.info(f"🔄 Translation request: {source_lang} → {target_lang} via {engine}{f' ({provider})' if provider else ''} | Text length: {len(text)} chars")
     analytics.incr('translations')

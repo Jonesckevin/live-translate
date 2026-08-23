@@ -521,12 +521,16 @@
     function initModals() {
         const sessionsBtn = document.getElementById('openSessionsModal');
         const settingsBtn = document.getElementById('openSettingsModal');
+        const glossaryBtn = document.getElementById('openGlossaryModal');
+        const glossaryBtnInSettings = document.getElementById('openGlossaryModalBtn');
         const sessionsModal = document.getElementById('sessionsModal');
         const settingsModal = document.getElementById('settingsModal');
         const helpModal = document.getElementById('helpModal');
+        const glossaryModal = document.getElementById('glossaryModal');
         const closeSessionsBtn = document.getElementById('closeSessionsModal');
         const closeSettingsBtn = document.getElementById('closeSettingsModal');
         const closeHelpBtn = document.getElementById('closeHelpModal');
+        const closeGlossaryBtn = document.getElementById('closeGlossaryModal');
         const helpModalTitle = document.getElementById('helpModalTitle');
         const helpModalContent = document.getElementById('helpModalContent');
 
@@ -587,13 +591,21 @@
         closeSettingsBtn?.addEventListener('click', () => closeModal(settingsModal));
         closeHelpBtn?.addEventListener('click', () => closeModal(helpModal));
 
+        const openGlossaryViewer = () => {
+            loadGlossaries();
+            openModal(glossaryModal);
+        };
+        glossaryBtn?.addEventListener('click', openGlossaryViewer);
+        glossaryBtnInSettings?.addEventListener('click', openGlossaryViewer);
+        closeGlossaryBtn?.addEventListener('click', () => closeModal(glossaryModal));
+
         document.querySelectorAll('[data-help-topic]').forEach((btn) => {
             btn.addEventListener('click', () => {
                 openHelpModal(btn.dataset.helpTopic);
             });
         });
 
-        [sessionsModal, settingsModal, helpModal].forEach(modal => {
+        [sessionsModal, settingsModal, helpModal, glossaryModal].forEach(modal => {
             modal?.addEventListener('click', (e) => {
                 if (e.target === modal) closeModal(modal);
             });
@@ -604,6 +616,7 @@
             closeModal(sessionsModal);
             closeModal(settingsModal);
             closeModal(helpModal);
+            closeModal(glossaryModal);
         });
     }
 
@@ -3284,18 +3297,20 @@
             const container = document.getElementById('glossaryList');
             container.innerHTML = '';
 
-            if (!data.glossaries || data.glossaries.length === 0) {
+            const legacy = data.glossaries || [];
+            const concepts = data.concept_glossaries || [];
+
+            if (legacy.length === 0 && concepts.length === 0) {
                 container.innerHTML = '<div class="empty-state" style="padding: 1rem; text-align: center; color: var(--text-muted);">No glossaries yet. Import one to get started.</div>';
-                return;
             }
 
-            for (const g of data.glossaries) {
+            for (const g of legacy) {
                 const item = document.createElement('div');
                 item.className = 'glossary-item';
                 item.innerHTML = `
-                    <div class="glossary-item-info">
-                        <div class="glossary-item-name">${escapeHtml(g.name)}</div>
-                        <div class="glossary-item-meta">${g.source_language} → ${g.target_language} · ${g.entry_count} ${g.entry_count === 1 ? 'entry' : 'entries'}</div>
+                    <div class="glossary-item-info" style="display:flex;align-items:baseline;gap:0.5rem;flex-wrap:wrap;">
+                        <span class="glossary-item-name">${escapeHtml(g.name)}</span>
+                        <span class="glossary-item-meta">${g.source_language} → ${g.target_language} · ${g.entry_count} ${g.entry_count === 1 ? 'entry' : 'entries'}</span>
                     </div>
                     <div class="glossary-item-actions">
                         <button class="btn-danger glossary-delete-btn" data-id="${g.id}">🗑️ Delete</button>
@@ -3309,8 +3324,311 @@
                 });
                 container.appendChild(item);
             }
+
+            renderConceptGlossaries(concepts);
         } catch (e) {
             console.error('Failed to load glossaries', e);
+        }
+    }
+
+    function collectConceptLanguages(cg) {
+        const langs = new Set();
+        for (const c of cg.concepts || []) {
+            for (const t of c.terms || []) {
+                if (t && t.language) langs.add(t.language);
+            }
+        }
+        return [...langs];
+    }
+
+    function findConceptTerm(c, lang) {
+        return (c.terms || []).find(t => t && t.language === lang) || null;
+    }
+
+    async function exportConceptGlossary(cg) {
+        try {
+            const res = await fetch(`/api/glossaries/${encodeURIComponent(cg.id)}/export`);
+            if (!res.ok) throw new Error('Export failed');
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${cg.id || 'glossary'}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            showToast(`Export failed: ${e.message || 'Error'}`, 'error');
+        }
+    }
+
+    async function deleteConceptGlossaryById(cg) {
+        if (!confirm(`Delete glossary "${cg.name}"?`)) return;
+        try {
+            const res = await fetch(`/api/glossaries/${encodeURIComponent(cg.id)}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('Delete failed');
+            showToast('Glossary deleted', 'success');
+            loadGlossaries();
+        } catch (e) {
+            showToast(`Delete failed: ${e.message || 'Error'}`, 'error');
+        }
+    }
+
+    async function deleteConceptById(cg, conceptId) {
+        if (!confirm(`Delete concept "${conceptId}"?`)) return;
+        try {
+            const res = await fetch(`/api/glossaries/${encodeURIComponent(cg.id)}/concepts/${encodeURIComponent(conceptId)}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('Delete failed');
+            showToast('Concept deleted', 'success');
+            loadGlossaries();
+        } catch (e) {
+            showToast(`Delete failed: ${e.message || 'Error'}`, 'error');
+        }
+    }
+
+    async function addConceptToGlossary(cg, conceptId, term, description, lang, pos, example, usage) {
+        const concept = {
+            concept_id: conceptId,
+            terms: [{ language: lang, term, part_of_speech: pos || '', description, example_sentence: example || '', usage_note: usage || '' }],
+            prohibited: {},
+        };
+        try {
+            const res = await fetch(`/api/glossaries/${encodeURIComponent(cg.id)}/concepts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(concept),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to add concept');
+            showToast('Concept added', 'success');
+            loadGlossaries();
+        } catch (e) {
+            showToast(`Failed to add concept: ${e.message || 'Error'}`, 'error');
+        }
+    }
+
+    async function importGlossaryFileViaModal(file) {
+        try {
+            const form = new FormData();
+            form.append('file', file);
+            const res = await fetch('/api/glossaries/import', { method: 'POST', body: form });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Import failed');
+            showToast(`Glossary imported (${data.entry_count || data.concept_count || 0})`, 'success');
+            loadGlossaries();
+        } catch (e) {
+            showToast(`Import failed: ${e.message || 'Error'}`, 'error');
+        }
+    }
+
+    function renderConceptGlossaries(conceptGlossaries) {
+        const host = document.getElementById('glossaryModalContent');
+        if (!host) return;
+        host.innerHTML = '';
+
+        // Import / Clear All (top toolbar) — available even before any glossary exists.
+        const toolbar = document.createElement('div');
+        toolbar.style.cssText = 'display:flex;justify-content:flex-end;gap:0.4rem;padding-bottom:0.5rem;';
+        const importBtn = document.createElement('button');
+        importBtn.className = 'btn-secondary';
+        importBtn.textContent = 'Import JSON';
+        toolbar.appendChild(importBtn);
+        const clearBtn = document.createElement('button');
+        clearBtn.className = 'btn-danger';
+        clearBtn.textContent = 'Clear All';
+        clearBtn.title = 'Delete all glossaries';
+        clearBtn.style.display = (!conceptGlossaries || conceptGlossaries.length === 0) ? 'none' : '';
+        toolbar.appendChild(clearBtn);
+        host.appendChild(toolbar);
+        clearBtn.addEventListener('click', async () => {
+            if (!conceptGlossaries || conceptGlossaries.length === 0) return;
+            if (!confirm(`Delete ALL ${conceptGlossaries.length} glossaries? This cannot be undone.`)) return;
+            let ok = 0, fail = 0;
+            for (const cg of conceptGlossaries) {
+                try {
+                    const res = await fetch(`/api/glossaries/${encodeURIComponent(cg.id)}`, { method: 'DELETE' });
+                    if (res.ok) ok++; else fail++;
+                } catch { fail++; }
+            }
+            showToast(fail ? `Cleared ${ok}, failed ${fail}` : `Cleared ${ok} glossaries`, fail ? 'warning' : 'success');
+            loadGlossaries();
+        });
+
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = '.json,.csv,.tsv,.txt';
+        fileInput.style.display = 'none';
+        host.appendChild(fileInput);
+        importBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', async () => {
+            const file = fileInput.files && fileInput.files[0];
+            if (!file) return;
+            await importGlossaryFileViaModal(file);
+            fileInput.value = '';
+        });
+
+        if (!conceptGlossaries || conceptGlossaries.length === 0) {
+            const empty = document.createElement('div');
+            empty.style.cssText = 'font-size:0.85rem;color:var(--text-muted);padding:0.5rem 0;';
+            empty.textContent = 'No concept glossaries yet. Use "Import JSON" to add one.';
+            host.appendChild(empty);
+            return;
+        }
+
+        for (const cg of conceptGlossaries) {
+            const langs = collectConceptLanguages(cg);
+            const canonical = (cg.canonical_language && langs.includes(cg.canonical_language))
+                ? cg.canonical_language
+                : (langs[0] || 'en');
+            const concepts = cg.concepts || [];
+
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'margin-top:1rem;border-top:1px solid var(--border);padding-top:0.75rem;';
+
+            const header = document.createElement('div');
+            header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:0.5rem;flex-wrap:wrap;';
+            const title = document.createElement('div');
+            title.innerHTML = `<span class="glossary-item-name">${escapeHtml(cg.name || 'Glossary')}</span>` +
+                (cg.domain ? `<span style="margin-left:0.5rem;font-size:0.72rem;color:var(--text-muted);">${escapeHtml(cg.domain)}</span>` : '') +
+                `<span style="margin-left:0.6rem;font-size:0.75rem;color:var(--accent);">${concepts.length} ${concepts.length === 1 ? 'concept' : 'concepts'}</span>`;
+            header.appendChild(title);
+
+            const actions = document.createElement('div');
+            actions.style.cssText = 'display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;';
+
+            const sel = document.createElement('select');
+            sel.title = 'Description language';
+            sel.style.cssText = 'background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:2px 6px;';
+            for (const lang of langs) {
+                const opt = document.createElement('option');
+                opt.value = lang;
+                opt.textContent = lang;
+                if (lang === canonical) opt.selected = true;
+                sel.appendChild(opt);
+            }
+            actions.appendChild(sel);
+
+            const addBtn = document.createElement('button');
+            addBtn.className = 'btn-secondary';
+            addBtn.textContent = '+ Add';
+            actions.appendChild(addBtn);
+
+            const exportBtn = document.createElement('button');
+            exportBtn.className = 'btn-secondary';
+            exportBtn.textContent = 'Export';
+            actions.appendChild(exportBtn);
+
+            const delBtn = document.createElement('button');
+            delBtn.className = 'btn-danger';
+            delBtn.textContent = 'Delete';
+            actions.appendChild(delBtn);
+
+            header.appendChild(actions);
+            wrap.appendChild(header);
+
+            const search = document.createElement('input');
+            search.type = 'text';
+            search.placeholder = 'Search terms…';
+            search.style.cssText = 'margin-top:0.5rem;width:100%;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;';
+            wrap.appendChild(search);
+
+            const form = document.createElement('div');
+            form.style.cssText = 'display:none;margin-top:0.5rem;padding:0.5rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);';
+            form.innerHTML = `
+                <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.4rem;">Add a new concept (language: ${escapeHtml(sel.value)}):</div>
+                <div style="display:flex;flex-direction:column;gap:0.4rem;">
+                    <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                        <input id="cgConceptId" placeholder="concept_id" style="flex:1 1 140px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;" />
+                        <input id="cgTerm" placeholder="term" style="flex:2 1 180px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;" />
+                        <input id="cgPos" placeholder="part_of_speech (e.g. noun)" style="flex:1 1 170px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;" />
+                    </div>
+                    <input id="cgDesc" placeholder="description" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;" />
+                    <input id="cgExample" placeholder="example sentence" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;" />
+                    <input id="cgUsage" placeholder="usage note" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;" />
+                    <button class="btn-primary" id="cgSubmit" style="align-self:flex-start;">Save</button>
+                </div>
+            `;
+            wrap.appendChild(form);
+
+            const list = document.createElement('div');
+            wrap.appendChild(list);
+            host.appendChild(wrap);
+
+            const renderConcepts = () => {
+                const lang = sel.value;
+                const q = (search.value || '').trim().toLowerCase();
+                list.innerHTML = '';
+                const shown = concepts.filter((c) => {
+                    if (!q) return true;
+                    return (c.terms || []).some((t) => (t.term || '').toLowerCase().includes(q));
+                });
+                for (const c of shown) {
+                    const termRec = findConceptTerm(c, lang);
+                    const canonicalRec = lang !== canonical ? findConceptTerm(c, canonical) : null;
+                    const row = document.createElement('div');
+                    row.style.cssText = 'padding:0.5rem 0;border-bottom:1px solid var(--border);display:flex;gap:0.5rem;align-items:flex-start;';
+                    const body = document.createElement('div');
+                    body.style.cssText = 'flex:1;';
+                    let html = '<div style="font-weight:600;">';
+                    html += termRec ? escapeHtml(termRec.term || '') : `<span style="color:var(--text-muted);">(${escapeHtml(c.concept_id || '')})</span>`;
+                    if (termRec && termRec.part_of_speech) {
+                        html += ` <span style="font-size:0.7rem;color:var(--text-muted);font-weight:400;">(${escapeHtml(termRec.part_of_speech)})</span>`;
+                    }
+                    if (canonicalRec && canonicalRec.term && canonicalRec.term !== (termRec && termRec.term)) {
+                        html += ` <span style="font-size:0.72rem;color:var(--accent2);">[${escapeHtml(canonical.toUpperCase())}: ${escapeHtml(canonicalRec.term)}]</span>`;
+                    }
+                    html += '</div>';
+                    if (termRec && termRec.description) {
+                        html += `<div style="font-size:0.8rem;color:var(--text);margin-top:2px;">${escapeHtml(termRec.description)}</div>`;
+                    }
+                    if (termRec && termRec.example_sentence) {
+                        html += `<div style="font-size:0.75rem;color:var(--text-muted);font-style:italic;margin-top:2px;">“${escapeHtml(termRec.example_sentence)}”</div>`;
+                    }
+                    body.innerHTML = html;
+                    row.appendChild(body);
+
+                    const delC = document.createElement('button');
+                    delC.className = 'btn-danger';
+                    delC.style.cssText = 'flex:0 0 auto;font-size:0.75rem;';
+                    delC.textContent = '✕';
+                    delC.title = 'Delete concept';
+                    delC.addEventListener('click', () => deleteConceptById(cg, c.concept_id));
+                    row.appendChild(delC);
+
+                    list.appendChild(row);
+                }
+                if (!shown.length) {
+                    list.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);">No matching concepts.</div>';
+                }
+            };
+
+            search.addEventListener('input', renderConcepts);
+            sel.addEventListener('change', renderConcepts);
+            addBtn.addEventListener('click', () => {
+                form.style.display = form.style.display === 'none' ? 'block' : 'none';
+            });
+            form.querySelector('#cgSubmit').addEventListener('click', () => {
+                const conceptId = form.querySelector('#cgConceptId').value.trim();
+                const term = form.querySelector('#cgTerm').value.trim();
+                const pos = form.querySelector('#cgPos').value.trim();
+                const desc = form.querySelector('#cgDesc').value.trim();
+                const example = form.querySelector('#cgExample').value.trim();
+                const usage = form.querySelector('#cgUsage').value.trim();
+                if (!conceptId || !term) { showToast('Concept ID and term are required', 'warning'); return; }
+                addConceptToGlossary(cg, conceptId, term, desc, sel.value, pos, example, usage);
+                form.style.display = 'none';
+                form.querySelector('#cgConceptId').value = '';
+                form.querySelector('#cgTerm').value = '';
+                form.querySelector('#cgPos').value = '';
+                form.querySelector('#cgDesc').value = '';
+                form.querySelector('#cgExample').value = '';
+                form.querySelector('#cgUsage').value = '';
+            });
+            exportBtn.addEventListener('click', () => exportConceptGlossary(cg));
+            delBtn.addEventListener('click', () => deleteConceptGlossaryById(cg));
+
+            renderConcepts();
         }
     }
 

@@ -48,6 +48,7 @@
             </label>
             <div id="authHeader" class="auth-header" style="display:none;"></div>
             <button class="btn-secondary" id="openPresentationMode" title="Present the translated output on a fullscreen display for a wider audience">📺 Present</button>
+            <button class="btn-secondary" id="openGlossaryModal" title="View the glossary">📖 Glossary</button>
             <button class="btn-secondary" id="openSettingsModal">⚙️ Settings</button>
         </div>
     </header>
@@ -367,32 +368,30 @@
                         <h3>Glossaries</h3>
                         <button class="help-icon-btn" data-help-topic="glossaries" title="Glossary help" aria-label="Glossary help">?</button>
                     </div>
-                    <p class="settings-desc">Glossaries let you force preferred terminology so translations stay consistent across messages and sessions.</p>
-                    <p class="settings-help-inline">How to use: choose a file and click Import. Each upload replaces the current glossary with a single saved glossary named Glossary.</p>
-                    
-                    
-                    <div class="glossary-import-compact">
-                        <div class="glossary-import-fields">
-                            <input id="glossarySourceLang" type="text" placeholder="From (auto from conversation if blank)" class="glossary-input" />
-                            <input id="glossaryTargetLang" type="text" placeholder="To (auto from conversation if blank)" class="glossary-input" />
-                        </div>
-                        <div class="glossary-import-actions">
-                            <input id="glossaryFile" type="file" accept=".json,.csv,.tsv,.txt" />
-                            <select id="glossaryTemplateFormat" class="glossary-template-select">
-                                <option value="csv">CSV</option>
-                                <option value="json">JSON</option>
-                                <option value="tsv">TSV</option>
-                                <option value="txt">TXT</option>
-                            </select>
-                            <button class="btn-secondary" id="downloadGlossaryTemplate" title="Download template">📄 Download Template</button>
-                        </div>
-                        <p class="glossary-format-hint">Supported: JSON, CSV, TSV, TXT. CSV/TSV need source and target columns. Import overwrites the current Glossary. Press Enter in any field or click Import.</p>
-                    </div>
-                    
-                    
+                    <p class="settings-desc">Glossaries force preferred terminology so translations stay consistent across messages and sessions.</p>
+                    <p class="settings-help-inline">Use the 📖 Glossary button to view, search, add, and export concept glossaries.</p>
                     <div class="glossary-list" id="glossaryList"></div>
+                    <div class="glossary-viewer-actions" style="margin-top:0.75rem;">
+                        <button class="btn-secondary" id="openGlossaryModalBtn" title="Open the glossary viewer">📖 View Glossary</button>
+                    </div>
                 </div>
             </div>
+            </div>
+        </div>
+    </div>
+
+    
+    <div class="app-modal" id="glossaryModal" aria-hidden="true">
+        <div class="app-modal-dialog modal-glossary">
+            <div class="app-modal-header">
+                <div class="section-title-inline">
+                    <h2>Glossary</h2>
+                    <button class="help-icon-btn" data-help-topic="glossaries" title="Glossary help" aria-label="Glossary help">?</button>
+                </div>
+                <button class="icon-btn" id="closeGlossaryModal" title="Close">✕</button>
+            </div>
+            <div class="app-modal-body">
+                <div id="glossaryModalContent"></div>
             </div>
         </div>
     </div>
