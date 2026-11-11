@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% if doc_title %}{{ doc_title }} — {% endif %}Live Translate Docs</title>
-  <link rel="stylesheet" href="/static/style.css" />
-  <link rel="stylesheet" href="/static/docs.css" />
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}" />
+  <link rel="stylesheet" href="/static/docs.css?v={{ asset_version }}" />
 </head>
 <body class="docs-body">
   <header class="docs-topbar">
     <a class="docs-brand" href="/"><span class="docs-logo">LT</span> Live Translate</a>
-    <a class="btn-secondary" href="/">&larr; Back to app</a>
+    <a class="btn-secondary" href="/"><span data-icon="back"></span> Back to app</a>
   </header>
   <div class="docs-layout">
     <nav class="docs-nav">
@@ -33,5 +33,6 @@
       {% endif %}
     </main>
   </div>
+  <script src="/static/icons.js?v={{ asset_version }}"></script>
 </body>
 </html>

@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Live Translate — Admin</title>
-  <link rel="stylesheet" href="/static/style.css" />
-  <link rel="stylesheet" href="/static/admin-dashboard.css" />
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}" />
+  <link rel="stylesheet" href="/static/admin-dashboard.css?v={{ asset_version }}" />
 </head>
 <body class="admin-body">
   <header class="admin-topbar">
@@ -14,8 +14,8 @@
       <span>Live Translate — Admin</span>
     </div>
     <div class="admin-topbar-right" id="topbarRight" style="display:none;">
-      <span class="admin-user">&#128100; <b id="whoami"></b></span>
-      <a class="btn-secondary" href="/">&larr; Back to app</a>
+      <span class="admin-user"><span data-icon="users" data-icon-size="14"></span> <b id="whoami"></b></span>
+      <a class="btn-secondary" href="/"><span data-icon="back"></span> Back to app</a>
       <button class="btn-danger" id="logoutBtn" type="button">Log out</button>
     </div>
   </header>
@@ -79,7 +79,7 @@
           <aside class="session-detail hidden" id="sessionDetail">
             <div class="session-detail-header">
               <h3 id="sdTitle">Session</h3>
-              <button class="icon-btn" id="closeDetail" type="button" title="Close">✕</button>
+              <button class="icon-btn" id="closeDetail" type="button" title="Close"><span data-icon="close"></span></button>
             </div>
             
             <div class="sd-section">
@@ -142,6 +142,7 @@
     </div>
   </main>
 
-  <script src="/static/admin-dashboard.js"></script>
+  <script src="/static/icons.js?v={{ asset_version }}"></script>
+  <script src="/static/admin-dashboard.js?v={{ asset_version }}"></script>
 </body>
 </html>

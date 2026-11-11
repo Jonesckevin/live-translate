@@ -134,11 +134,11 @@ class TranslationManager:
             return {'success': False, 'error': str(e), 'engine': 'libretranslate'}
 
     @staticmethod
-    def translate_llm(text, source_lang, target_lang, provider, model, api_key=None, custom_config=None, ai_auto_correct=True, context=None):
+    def translate_llm(text, source_lang, target_lang, provider, model, api_key=None, custom_config=None, ai_auto_correct=True, context=None, glossary_terms=None):
         """Translate using an LLM provider."""
         # Convert language code to full language name for LLM
         lang_label = _get_language_name(target_lang)
-        result = LLMManager.translate(text, lang_label, provider, model, api_key, custom_config, ai_auto_correct, context=context)
+        result = LLMManager.translate(text, lang_label, provider, model, api_key, custom_config, ai_auto_correct, context=context, glossary_terms=glossary_terms)
         if result.get('success'):
             return {
                 'success': True,
@@ -150,16 +150,29 @@ class TranslationManager:
     @staticmethod
     def translate(text, source_lang, target_lang, engine='libretranslate',
                   provider=None, model=None, api_key=None, custom_config=None,
-                  glossary=None, timeout=30, ai_auto_correct=True, context=None):
+                  glossary=None, timeout=30, ai_auto_correct=True, context=None,
+                  glossary_terms=None, glossary_mode='prompt'):
         """
         Unified translation entry point.
         engine: 'libretranslate' or 'llm'
         glossary: dict of {source_term: target_term} for pre/post processing
+        glossary_terms: structured terminology (with part of speech,
+            description, example, usage note) for LLM prompt injection; see
+            glossary_manager.get_context_entries_for()
+        glossary_mode: 'prompt' (tell the LLM about the terms), 'substitute'
+            (pre-replace them in the text) or 'both'. LibreTranslate always
+            substitutes because it accepts no prompt.
         ai_auto_correct: whether to enable AI spelling/typo correction (LLM only)
         """
+        # An LLM applies terminology better when it is told about it than when
+        # the source text is pre-mangled with placeholders, so prompt injection
+        # is the default for that engine.
+        substitute_terms = engine != 'llm' or glossary_mode in ('substitute', 'both')
+        inject_terms = engine == 'llm' and glossary_mode in ('prompt', 'both')
+
         processed_text = text
         placeholders = {}
-        if glossary:
+        if glossary and substitute_terms:
             for i, (src_term, tgt_term) in enumerate(glossary.items()):
                 placeholder = f"__GLOSS_{i}__"
                 if src_term in processed_text:
@@ -175,7 +188,8 @@ class TranslationManager:
                 return {'success': False, 'error': 'LLM provider and model required'}
             logger.debug(f"Using LLM engine: provider={provider}, model={model}")
             result = TranslationManager.translate_llm(
-                processed_text, source_lang, target_lang, provider, model, api_key, custom_config, ai_auto_correct, context
+                processed_text, source_lang, target_lang, provider, model, api_key, custom_config,
+                ai_auto_correct, context, glossary_terms if inject_terms else None
             )
         else:
             logger.error(f"Unknown engine: {engine}")

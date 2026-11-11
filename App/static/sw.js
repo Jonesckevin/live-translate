@@ -10,24 +10,29 @@
  *    require authentication, so caching them could leak data across users.
  */
 
-const VERSION = 'v1.0.3';
+// Substituted with the app's ASSET_VERSION when served from /sw.js (app.py).
+// Bumping ASSET_VERSION changes CACHE_NAME, which is what forces browsers to
+// refetch static assets that would otherwise be served cache-first.
+// Keep the `v` prefix: this becomes `live-translate-v<version>`.
+const VERSION = 'v__ASSET_VERSION__';
 const CACHE_NAME = `live-translate-${VERSION}`;
 
 // Core app shell. Keep in sync with templates/index.html script/style refs.
 const PRECACHE_URLS = [
   '/',
-  '/static/style.css?v=3',
-  '/static/app.js',
-  '/static/socket.io.min.js',
-  '/static/api-manager.js',
-  '/static/auth-widget.js',
-  '/static/keyboard-manager.js',
-  '/static/live-view.js',
-  '/static/speech-manager.js',
-  '/static/manifest.json',
-  '/static/icons/icon-192.png',
-  '/static/icons/icon-512.png',
-  '/static/icons/icon-maskable-512.png',
+  '/static/style.css?v=__ASSET_VERSION__',
+  '/static/icons.js?v=__ASSET_VERSION__',
+  '/static/app.js?v=__ASSET_VERSION__',
+  '/static/socket.io.min.js?v=__ASSET_VERSION__',
+  '/static/api-manager.js?v=__ASSET_VERSION__',
+  '/static/auth-widget.js?v=__ASSET_VERSION__',
+  '/static/keyboard-manager.js?v=__ASSET_VERSION__',
+  '/static/live-view.js?v=__ASSET_VERSION__',
+  '/static/speech-manager.js?v=__ASSET_VERSION__',
+  '/static/manifest.json?v=__ASSET_VERSION__',
+  '/static/icons/icon-192.png?v=__ASSET_VERSION__',
+  '/static/icons/icon-512.png?v=__ASSET_VERSION__',
+  '/static/icons/icon-maskable-512.png?v=__ASSET_VERSION__',
 ];
 
 // Requests to these path prefixes must never be served from cache.

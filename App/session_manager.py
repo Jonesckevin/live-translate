@@ -141,8 +141,70 @@ def set_recording(session_id, recording_filename):
         return data
 
 
+def set_message_speakers(session_id, speaker_by_index):
+    """Apply {message_index: speaker_label} to a session's stored messages.
+
+    Used after diarizing a session recording. Out-of-range indices and empty
+    labels are ignored so a partial result cannot corrupt history. Returns the
+    updated session data, or None when there is nothing to write.
+    """
+    if not _is_safe_id(session_id):
+        logger.warning("Rejected unsafe session id in set_message_speakers")
+        return None
+
+    cleaned = {}
+    for key, value in (speaker_by_index or {}).items():
+        try:
+            index = int(key)
+        except (TypeError, ValueError):
+            continue
+        label = str(value or '').strip()[:40]
+        if label:
+            cleaned[index] = label
+    if not cleaned:
+        return None
+
+    with _session_lock:
+        _ensure_dir()
+        fpath = os.path.join(SESSION_DIR, f"{session_id}.json")
+        if not os.path.exists(fpath):
+            logger.warning(f"Session not found for speaker update: {session_id}")
+            return None
+        with open(fpath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        messages = data.get('messages') or []
+        applied = 0
+        for index, label in cleaned.items():
+            if 0 <= index < len(messages):
+                messages[index]['speaker'] = label
+                applied += 1
+        data['updated_at'] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
+        _atomic_write_json(fpath, data)
+        logger.info(f"Applied speaker labels to {applied} message(s) in session {session_id}")
+        return data
+
+
+def _clean_speaker_names(raw):
+    """Normalize a {speaker_key: display name} map.
+
+    Anything that is not a non-empty string pair is dropped rather than
+    rejected, so a partially malformed payload cannot break a rename.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    cleaned = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        name = value.strip()[:60]
+        if not name:
+            continue
+        cleaned[key.strip()[:40]] = name
+    return cleaned
+
+
 def update_session(session_id, title=None, icon_filename=_UNSET, visibility=_UNSET, owner_id=_UNSET,
-                   join_password_hash=_UNSET):
+                   join_password_hash=_UNSET, speaker_names=_UNSET):
     """Update session metadata."""
     if not _is_safe_id(session_id):
         logger.warning("Rejected unsafe session id in update_session")
@@ -171,6 +233,9 @@ def update_session(session_id, title=None, icon_filename=_UNSET, visibility=_UNS
         if join_password_hash is not _UNSET:
             data['join_password_hash'] = join_password_hash
             updates.append('join_password_hash=<set>' if join_password_hash else 'join_password_hash=<cleared>')
+        if speaker_names is not _UNSET:
+            data['speaker_names'] = _clean_speaker_names(speaker_names)
+            updates.append('speaker_names=<set>')
         data['updated_at'] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
         logger.debug(f"Updating session {session_id}: {', '.join(updates) if updates else 'no changes'}")
         _atomic_write_json(fpath, data)

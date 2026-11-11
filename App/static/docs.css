@@ -14,8 +14,8 @@
 .docs-brand { display: flex; align-items: center; gap: 8px; color: var(--text-primary); text-decoration: none; font-weight: 600; }
 .docs-logo {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 28px; height: 28px; border-radius: 7px;
-    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+    width: 28px; height: 28px; border-radius: var(--radius-sm);
+    background: var(--accent-primary);
     color: #fff; font-weight: 700; font-size: 0.72rem;
 }
 
@@ -31,7 +31,7 @@
 .docs-nav h2 { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 10px; }
 .docs-nav a { display: block; color: var(--text-secondary); text-decoration: none; padding: 7px 10px; border-radius: var(--radius-sm); font-size: 0.9rem; }
 .docs-nav a:hover { background: var(--bg-hover); color: var(--text-primary); }
-.docs-nav a.active { background: rgba(168, 85, 247, 0.12); color: var(--accent-secondary); }
+.docs-nav a.active { background: var(--accent-soft); color: var(--accent-secondary); }
 
 .docs-main { flex: 1; padding: 32px 44px; max-width: 900px; line-height: 1.65; }
 .docs-main h1 { margin-top: 0; }

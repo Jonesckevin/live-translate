@@ -16,3 +16,7 @@ PyJWT>=2.13.0
 webauthn>=2.0.0,<3.0.0
 # cryptography>=48.0.1: fixes CVE-2026-26007, GHSA-537c-gmf6-5ccf
 cryptography>=48.0.1
+
+certifi>=2026.10.18
+filelock>=4.2.1
+pyasn1>=0.6.5

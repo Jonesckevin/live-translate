@@ -330,6 +330,82 @@ def get_entries_for(source_lang, target_lang):
     return entries
 
 
+def get_context_entries_for(source_lang, target_lang, limit=40):
+    """Return structured terminology for LLM prompt injection.
+
+    Unlike get_entries_for() — a flat {source: target} map used for placeholder
+    substitution — this keeps the concept metadata (part of speech,
+    description, example sentence, usage note) and any prohibited renderings,
+    so the model can apply a term with its intended meaning instead of blindly
+    swapping strings.
+
+    Returns a list of dicts with keys: source_term, target_term,
+    part_of_speech, description, example, usage_note, prohibited.
+    """
+    if not source_lang or not target_lang:
+        return []
+
+    entries = []
+    seen = set()
+
+    for g in _load_concept_glossaries():
+        for concept in g.get('concepts', []):
+            by_lang = {}
+            for t in concept.get('terms') or []:
+                if isinstance(t, dict) and t.get('language'):
+                    by_lang[t['language']] = t
+            src = by_lang.get(source_lang)
+            tgt = by_lang.get(target_lang)
+            if not (src and tgt):
+                continue
+            source_term = (src.get('term') or '').strip()
+            target_term = (tgt.get('term') or '').strip()
+            if not source_term or not target_term:
+                continue
+            key = source_term.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            prohibited = []
+            prohibited_map = concept.get('prohibited') or {}
+            if isinstance(prohibited_map, dict):
+                raw = prohibited_map.get(target_lang) or []
+                if isinstance(raw, list):
+                    prohibited = [str(p).strip() for p in raw if str(p).strip()]
+
+            entries.append({
+                'source_term': source_term,
+                'target_term': target_term,
+                'part_of_speech': (tgt.get('part_of_speech') or src.get('part_of_speech') or '').strip(),
+                'description': (tgt.get('description') or '').strip(),
+                'example': (tgt.get('example_sentence') or '').strip(),
+                'usage_note': (tgt.get('usage_note') or '').strip(),
+                'prohibited': prohibited,
+            })
+            if len(entries) >= limit:
+                return entries
+
+    # Legacy pair-based glossaries carry no metadata; include the bare mapping.
+    for src_term, tgt_term in get_entries_for_pair(source_lang, target_lang).items():
+        if src_term.lower() in seen:
+            continue
+        seen.add(src_term.lower())
+        entries.append({
+            'source_term': src_term,
+            'target_term': tgt_term,
+            'part_of_speech': '',
+            'description': '',
+            'example': '',
+            'usage_note': '',
+            'prohibited': [],
+        })
+        if len(entries) >= limit:
+            break
+
+    return entries
+
+
 def list_concept_glossaries():
     """Return concept-based glossaries (for the glossary viewer)."""
     return _load_concept_glossaries()

@@ -5,18 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Live Translate</title>
     <meta name="description" content="Self-hosted real-time translation: dual-panel conversation, speech-to-text, glossaries, and multi-provider LLM support.">
-    <meta name="theme-color" content="#1a1a24">
+    <meta name="theme-color" content="#0f1117">
     <meta name="color-scheme" content="dark">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Live Translate">
-    <link rel="manifest" href="/static/manifest.json">
-    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' style='stop-color:%23a855f7'/><stop offset='100%25' style='stop-color:%23c084fc'/></linearGradient></defs><rect width='100' height='100' rx='20' fill='%231a1a24'/><text x='50' y='70' font-family='Arial,sans-serif' font-size='55' font-weight='bold' text-anchor='middle' fill='url(%23g)'>LT</text></svg>">
-    <link rel="stylesheet" href="/static/style.css?v=3">
-    <script src="/static/socket.io.min.js"></script>
-    <script defer src="/static/pwa.js"></script>
+    <link rel="manifest" href="/static/manifest.json?v={{ asset_version }}">
+    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png?v={{ asset_version }}">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' style='stop-color:%238b5cf6'/><stop offset='100%25' style='stop-color:%23a78bfa'/></linearGradient></defs><rect width='100' height='100' rx='14' fill='%230f1117'/><text x='50' y='70' font-family='Arial,sans-serif' font-size='55' font-weight='bold' text-anchor='middle' fill='url(%23g)'>LT</text></svg>">
+    <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+    <script src="/static/socket.io.min.js?v={{ asset_version }}"></script>
+    <script defer src="/static/pwa.js?v={{ asset_version }}"></script>
     {% if ga_key %}
     
     <script nonce="{{ csp_nonce }}" src="https://www.googletagmanager.com/gtag/js?id={{ ga_key }}"></script>
@@ -37,11 +37,11 @@
                     <svg class="title-logo" id="defaultTitleLogo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                         <defs>
                             <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                                <stop offset="0%" style="stop-color:#a855f7"/>
-                                <stop offset="100%" style="stop-color:#c084fc"/>
+                                <stop offset="0%" style="stop-color:#8b5cf6"/>
+                                <stop offset="100%" style="stop-color:#a78bfa"/>
                             </linearGradient>
                         </defs>
-                        <rect width="100" height="100" rx="20" fill="#1a1a24"/>
+                        <rect width="100" height="100" rx="14" fill="#0f1117"/>
                         <text x="50" y="70" font-family="Arial, sans-serif" font-size="55" font-weight="bold" text-anchor="middle" fill="url(#logoGradient)">LT</text>
                     </svg>
                     <img class="title-logo-custom" id="customTitleLogo" alt="Custom app logo" style="display:none;" />
@@ -52,16 +52,16 @@
             <span class="app-subtitle"></span>
         </div>
         <div class="header-right">
-            <button class="hamburger-btn" id="hamburgerBtn" aria-label="Toggle menu" aria-expanded="false" aria-controls="headerMenu" title="Menu">☰</button>
+            <button class="hamburger-btn" id="hamburgerBtn" aria-label="Toggle menu" aria-expanded="false" aria-controls="headerMenu" title="Menu"><span data-icon="menu" data-icon-size="20"></span></button>
             <nav class="header-menu" id="headerMenu" aria-label="Main menu">
                 <label class="header-toggle">
                     <input type="checkbox" id="aiAutoCorrectHeader" title="Only works when LLMs are connected and selected in the options" />
-                    <span class="toggle-label">✨ Auto-Correct</span>
+                    <span class="toggle-label"><span data-icon="sparkles"></span> Auto-Correct</span>
                 </label>
                 <div id="authHeader" class="auth-header" style="display:none;"></div>
-                <button class="btn-secondary" id="openPresentationMode" title="Present the translated output on a fullscreen display for a wider audience">📺 Present</button>
-                <button class="btn-secondary" id="openGlossaryModal" title="View the glossary">📖 Glossary</button>
-                <button class="btn-secondary" id="openSettingsModal">⚙️ Settings</button>
+                <button class="btn-secondary" id="openPresentationMode" title="Present the translated output on a fullscreen display for a wider audience"><span data-icon="present"></span> Present</button>
+                <button class="btn-secondary" id="openGlossaryModal" title="View the glossary"><span data-icon="book"></span> Glossary</button>
+                <button class="btn-secondary" id="openSettingsModal"><span data-icon="settings"></span> Settings</button>
             </nav>
         </div>
     </header>
@@ -88,8 +88,8 @@
                 </div>
                 <div class="conversation-session-actions">
                     <button class="btn-secondary btn-session-icon" id="convNewSession" title="Create new session" aria-label="Create new session">+</button>
-                    <button class="btn-secondary btn-session-icon" id="openSessionsModal" title="Open sessions list" aria-label="Open sessions list">☰</button>
-                    <button class="btn-secondary btn-record" id="convRecord" title="Record this session's audio">⏺ Record</button>
+                    <button class="btn-secondary btn-session-icon" id="openSessionsModal" title="Open sessions list" aria-label="Open sessions list"><span data-icon="menu" data-icon-size="18"></span></button>
+                    <button class="btn-secondary btn-record" id="convRecord" title="Record this session's audio"><span data-icon="record"></span> Record</button>
                 </div>
             </div>
 
@@ -97,42 +97,42 @@
                 
                 <div class="conv-panel" id="convPanelLeft">
                     <div class="conv-mic-device-row">
-                        <label class="conv-mic-device-label">🎤 Microphone</label>
+                        <label class="conv-mic-device-label"><span data-icon="mic" data-icon-size="14"></span> Microphone</label>
                         <select class="conv-mic-device-select" id="convLeftMicDevice"><option value="">Default microphone</option></select>
                     </div>
                     <div class="conv-panel-header">
                         <select class="conv-lang-select" id="convLeftLang"></select>
-                        <button class="icon-btn mic-btn" id="convLeftMic" title="Start speaking">🎤</button>
+                        <button class="icon-btn mic-btn" id="convLeftMic" title="Start speaking"><span data-icon="mic" data-icon-size="18"></span></button>
                         <button class="icon-btn ptt-btn" id="convLeftPTT" title="Set push-to-talk keybind">PTT Off</button>
-                        <button class="icon-btn tts-btn" id="convLeftTTS" title="Read last message">🔊</button>
+                        <button class="icon-btn tts-btn" id="convLeftTTS" title="Read last message"><span data-icon="volume"></span></button>
                         <span class="mic-state-badge" id="convLeftMicState">Not active</span>
                         <span class="mic-status" id="convLeftMicStatus"></span>
                     </div>
-                    <div class="conv-messages" id="convLeftMessages"></div>
+                    <div class="conv-messages" id="convLeftMessages" role="log" aria-live="off" aria-label="Left panel conversation"></div>
                     <div class="conv-input-area">
                         <textarea id="convLeftInput" placeholder="Type or speak..." rows="2"></textarea>
-                        <button class="btn-send" id="convLeftSend">➤</button>
+                        <button class="btn-send" id="convLeftSend" title="Send" aria-label="Send"><span data-icon="send"></span></button>
                     </div>
                 </div>
 
                 
                 <div class="conv-panel" id="convPanelRight">
                     <div class="conv-mic-device-row">
-                        <label class="conv-mic-device-label">🎤 Microphone</label>
+                        <label class="conv-mic-device-label"><span data-icon="mic" data-icon-size="14"></span> Microphone</label>
                         <select class="conv-mic-device-select" id="convRightMicDevice"><option value="">Default microphone</option></select>
                     </div>
                     <div class="conv-panel-header">
                         <select class="conv-lang-select" id="convRightLang"></select>
-                        <button class="icon-btn mic-btn" id="convRightMic" title="Start speaking">🎤</button>
+                        <button class="icon-btn mic-btn" id="convRightMic" title="Start speaking"><span data-icon="mic" data-icon-size="18"></span></button>
                         <button class="icon-btn ptt-btn" id="convRightPTT" title="Set push-to-talk keybind">PTT Off</button>
-                        <button class="icon-btn tts-btn" id="convRightTTS" title="Read last message">🔊</button>
+                        <button class="icon-btn tts-btn" id="convRightTTS" title="Read last message"><span data-icon="volume"></span></button>
                         <span class="mic-state-badge" id="convRightMicState">Not active</span>
                         <span class="mic-status" id="convRightMicStatus"></span>
                     </div>
-                    <div class="conv-messages" id="convRightMessages"></div>
+                    <div class="conv-messages" id="convRightMessages" role="log" aria-live="off" aria-label="Right panel conversation"></div>
                     <div class="conv-input-area">
                         <textarea id="convRightInput" placeholder="Type or speak..." rows="2"></textarea>
-                        <button class="btn-send" id="convRightSend">➤</button>
+                        <button class="btn-send" id="convRightSend" title="Send" aria-label="Send"><span data-icon="send"></span></button>
                     </div>
                 </div>
             </div>
@@ -141,13 +141,13 @@
 
     
     <div class="app-modal" id="sessionsModal" aria-hidden="true">
-        <div class="app-modal-dialog">
+        <div class="app-modal-dialog" role="dialog" aria-modal="true" aria-label="Session History">
             <div class="app-modal-header">
                 <div class="section-title-inline">
                     <h2>Session History</h2>
                     <button class="help-icon-btn" data-help-topic="sessions" title="Session help" aria-label="Session help">?</button>
                 </div>
-                <button class="icon-btn" id="closeSessionsModal" title="Close">✕</button>
+                <button class="icon-btn" id="closeSessionsModal" title="Close"><span data-icon="close"></span></button>
             </div>
             <div class="app-modal-body">
             <div class="sessions-summary">
@@ -159,14 +159,14 @@
                 <button class="btn-secondary" id="viewActiveSession">Manage Active</button>
             </div>
             <div class="sessions-header">
-                <button class="btn-secondary" id="refreshSessions">↻ Refresh</button>
+                <button class="btn-secondary" id="refreshSessions"><span data-icon="refresh"></span> Refresh</button>
             </div>
             <div class="sessions-list" id="sessionsList">
                 <div class="empty-state">No sessions yet. Start translating to create a session.</div>
             </div>
             <div class="session-detail" id="sessionDetail" style="display:none;">
                 <div class="session-detail-header">
-                    <button class="btn-back" id="sessionBack">← Back</button>
+                    <button class="btn-back" id="sessionBack"><span data-icon="back"></span> Back</button>
                     <div class="session-detail-title-wrap">
                         <img id="sessionDetailIcon" class="session-identicon-image session-detail-identicon" alt="Session icon" title="Click or drag and drop image to update" />
                         <h3 id="sessionTitle"></h3>
@@ -176,11 +176,12 @@
                         <button class="btn-secondary" id="exportSession">Export</button>
                         <button class="btn-secondary" id="transcriptSession">Transcript</button>
                         <button class="btn-secondary" id="summarySession">Summary</button>
-                        <button class="btn-secondary" id="sessionLiveViewBtn">🔗 Live View</button>
+                        <button class="btn-secondary" id="sessionLiveViewBtn"><span data-icon="link"></span> Live View</button>
                         <button class="btn-danger" id="deleteSession">Delete</button>
                     </div>
                     <div class="session-qr-row" id="sessionQrRow" style="display:none;">
                         <img id="sessionQrImage" alt="QR code for the live view link" />
+                        <code class="session-qr-link" id="sessionQrLink" hidden></code>
                     </div>
                 </div>
                 
@@ -188,9 +189,9 @@
                     <div class="session-vis-row">
                         <label class="session-vis-label">Visibility</label>
                         <select id="sessionVisSelect" class="session-vis-select">
-                            <option value="private">🔒 Private (only you)</option>
-                            <option value="shared">🔗 Shared (link only)</option>
-                            <option value="public">🌍 Public (anyone)</option>
+                            <option value="private">Private (only you)</option>
+                            <option value="shared">Shared (link only)</option>
+                            <option value="public">Public (anyone)</option>
                         </select>
                     </div>
                     <div class="session-pass-row" id="sessionPassRow" style="display:none;">
@@ -204,13 +205,13 @@
                     </div>
                     <div class="session-vis-actions">
                         <button class="btn-primary" id="sessionVisSave" type="button">Save access settings</button>
-                        <button class="btn-secondary" id="sessionShareBtn" type="button">📋 Copy share code</button>
+                        <button class="btn-secondary" id="sessionShareBtn" type="button"><span data-icon="clipboard"></span> Copy share code</button>
                     </div>
                     <div class="session-vis-feedback" id="sessionVisFeedback"></div>
                 </div>
                 <div class="session-recording" id="sessionRecording" style="display:none;">
                     <div class="section-title-inline">
-                        <h4>🎙️ Recording</h4>
+                        <h4>Recording</h4>
                     </div>
                     <audio id="sessionRecordingAudio" controls></audio>
                 </div>
@@ -222,20 +223,20 @@
 
     
     <div class="app-modal" id="settingsModal" aria-hidden="true">
-        <div class="app-modal-dialog modal-settings">
+        <div class="app-modal-dialog modal-settings" role="dialog" aria-modal="true" aria-label="Settings">
             <div class="app-modal-header">
                 <div class="section-title-inline">
                     <h2>Settings</h2>
                     <button class="help-icon-btn" data-help-topic="settings" title="Settings help" aria-label="Settings help">?</button>
                 </div>
-                <button class="icon-btn" id="closeSettingsModal" title="Close">✕</button>
+                <button class="icon-btn" id="closeSettingsModal" title="Close"><span data-icon="close"></span></button>
             </div>
             <div class="app-modal-body">
             <div class="settings-grid">
                 
                 <div class="settings-reset-row">
                     <button class="btn-danger" id="resetSettingsBtn">
-                        🔄 Reset All Settings to Defaults
+                        <span data-icon="refresh"></span> Reset All Settings to Defaults
                     </button>
                     <span class="settings-reset-info">This will reset all your preferences, API keys, and voice settings.</span>
                 </div>
@@ -292,6 +293,29 @@
                             <option value="450">Relaxed (fewer updates)</option>
                         </select>
                     </div>
+                    <div class="setting-row">
+                        <label for="contextEnabled" title="Send the last few translated turns to the LLM so it can resolve pronouns and hold terminology across a conversation. AI / LLM engines only — LibreTranslate is stateless. Memory is cleared when you switch sessions.">Conversation memory</label>
+                        <input type="checkbox" id="contextEnabled" />
+                    </div>
+                    <div class="setting-row">
+                        <label for="contextMaxItems" title="How many recent turns to remember. More turns means better continuity but a longer prompt (slower and more tokens per request).">Remembered turns</label>
+                        <select id="contextMaxItems">
+                            <option value="2">2 (fastest)</option>
+                            <option value="4">4</option>
+                            <option value="6">6 (recommended)</option>
+                            <option value="8">8</option>
+                            <option value="12">12 (most context)</option>
+                        </select>
+                    </div>
+                    <div class="setting-row">
+                        <label for="glossaryMode" title="How glossary terms are applied by AI / LLM engines. Prompt: tell the model the required terms and their meanings (most natural wording). Substitute: swap terms before translating (exact, can read stiffly). Both: do both. LibreTranslate always substitutes.">Glossary handling</label>
+                        <select id="glossaryMode">
+                            <option value="prompt">Prompt (natural)</option>
+                            <option value="substitute">Substitute (exact)</option>
+                            <option value="both">Both</option>
+                        </select>
+                    </div>
+                    <p class="settings-help-inline">Conversation memory and glossary handling apply to AI / LLM engines. LibreTranslate is stateless and uses term substitution only.</p>
                 </div>
 
                 
@@ -323,17 +347,18 @@
                     </div>
                     <p class="settings-desc">Configure speech-to-text engine and options.</p>
                     <div class="setting-row">
-                        <label title="Selects the speech-to-text recognition engine. Browser: offline, fast, no data sent. Server-side: more accurate, some data sent to server. Cloud: highest accuracy, data sent to external AI provider.">STT Engine</label>
+                        <label title="Selects the speech-to-text recognition engine. Browser: recognised on your device when the browser supports it (no audio leaves the machine) and otherwise uses the browser vendor's online service. Server-side: local Whisper, works offline, less fluent live updates. Cloud: highest accuracy, highest privacy cost.">STT Engine</label>
                         <select id="sttEngine" title="
-                            Browser = May not work offline and has best on the fly updates. 
-                            Whisper = Data is processed locally but not as fluent in the chat when talking. 
-                            AI Provider = data sent to selected provider (lowest privacy unless local).">
+                            Browser = On-device recognition where the browser supports it (best live updates, nothing leaves the machine). If the browser needs its online service and that is unreachable, Whisper is used automatically when the server has it enabled.
+                            Whisper = Runs on this server, works offline, but text arrives when you stop the microphone.
+                            AI Provider = audio is sent to the selected provider (lowest privacy unless the provider is local).">
                             <option value="web_speech_api">Web Speech API (Browser)</option>
                             <option value="whisper">Whisper (Server-side)</option>
                             <option value="ai_provider">AI Provider (Cloud STT)</option>
                         </select>
                     </div>
                     <div class="whisper-info" id="whisperInfo"></div>
+                    <div class="whisper-info" id="sttEngineInfo"></div>
 
                     <div class="setting-row" id="whisperModelRow" style="display:none;">
                         <label>Whisper Model</label>
@@ -373,19 +398,58 @@
                         <label for="ttsAutoSpeak" title="Automatically speak each new translated message aloud using your selected playback voices.">Auto-speak translations</label>
                         <input type="checkbox" id="ttsAutoSpeak" />
                     </div>
+                    <div class="setting-row">
+                        <label for="speakerLeftName" title="Display name for the left panel's speaker. Shown in session history, transcripts, and live views. Each session can override it by clicking the speaker label there.">Left speaker name</label>
+                        <input type="text" id="speakerLeftName" maxlength="60" placeholder="Speaker 1" />
+                    </div>
+                    <div class="setting-row">
+                        <label for="speakerRightName" title="Display name for the right panel's speaker.">Right speaker name</label>
+                        <input type="text" id="speakerRightName" maxlength="60" placeholder="Speaker 2" />
+                    </div>
+                    <div class="setting-row">
+                        <label for="sttDiarization" title="Attribute speakers in a session recording using a diarizing STT model. Only needed for single-mic / mixed recordings — in a live two-panel conversation the microphone channel already identifies the speaker.">Speaker diarization for recordings</label>
+                        <input type="checkbox" id="sttDiarization" />
+                    </div>
+                    <p class="settings-help-inline">Diarization needs a diarizing STT model (for example <code>gpt-4o-transcribe-diarize</code>) and the server flag <code>STT_DIARIZATION_ENABLED</code>. Live two-panel conversations never need it: each panel uses its own microphone, so the speaker is already known.</p>
                 </div>
 
                 
+                <!-- Screen reader / accessibility -->
+                <div class="settings-card">
+                    <div class="section-title-inline section-title-card">
+                        <h3>Accessibility &amp; Screen Readers</h3>
+                        <button class="help-icon-btn" data-help-topic="accessibility" title="Accessibility help" aria-label="Accessibility help">?</button>
+                    </div>
+                    <p class="settings-desc">Announce conversation activity for screen readers. Every option below is off by default &mdash; enable only the ones you want.</p>
+                    <div class="setting-row">
+                        <label for="a11yAnnounceTranslations" title="Speak each finished translation. Interim word-by-word updates are never announced, so you only hear each utterance once, when it is final.">Announce new translations</label>
+                        <input type="checkbox" id="a11yAnnounceTranslations" />
+                    </div>
+                    <div class="setting-row">
+                        <label for="a11yAnnounceSource" title="Include the original spoken text ahead of the translation, so you hear what was said and how it was translated.">Include the original text</label>
+                        <input type="checkbox" id="a11yAnnounceSource" />
+                    </div>
+                    <div class="setting-row">
+                        <label for="a11yAnnounceMicState" title="Speak when a microphone turns on, off, or becomes unavailable. Required for hands-free confirmation that dictation has started.">Announce microphone on/off</label>
+                        <input type="checkbox" id="a11yAnnounceMicState" />
+                    </div>
+                    <div class="setting-row">
+                        <label for="a11yAnnounceToasts" title="Speak status messages such as saved sessions, connection problems, and copy confirmations. Errors and warnings are announced immediately.">Announce notifications</label>
+                        <input type="checkbox" id="a11yAnnounceToasts" />
+                    </div>
+                    <p class="settings-help-inline">These use your screen reader's own voice. The Playback Voice settings above are separate: if Auto-speak translations is also on, each translation is read twice.</p>
+                </div>
+
                 <div class="settings-card">
                     <div class="section-title-inline section-title-card">
                         <h3>Glossaries</h3>
                         <button class="help-icon-btn" data-help-topic="glossaries" title="Glossary help" aria-label="Glossary help">?</button>
                     </div>
                     <p class="settings-desc">Glossaries force preferred terminology so translations stay consistent across messages and sessions.</p>
-                    <p class="settings-help-inline">Use the 📖 Glossary button to view, search, add, and export concept glossaries.</p>
+                    <p class="settings-help-inline">Use the Glossary button in the header to view, search, add, and export concept glossaries.</p>
                     <div class="glossary-list" id="glossaryList"></div>
                     <div class="glossary-viewer-actions" style="margin-top:0.75rem;">
-                        <button class="btn-secondary" id="openGlossaryModalBtn" title="Open the glossary viewer">📖 View Glossary</button>
+                        <button class="btn-secondary" id="openGlossaryModalBtn" title="Open the glossary viewer"><span data-icon="book"></span> View Glossary</button>
                     </div>
                 </div>
             </div>
@@ -395,13 +459,13 @@
 
     
     <div class="app-modal" id="glossaryModal" aria-hidden="true">
-        <div class="app-modal-dialog modal-glossary">
+        <div class="app-modal-dialog modal-glossary" role="dialog" aria-modal="true" aria-label="Glossary">
             <div class="app-modal-header">
                 <div class="section-title-inline">
                     <h2>Glossary</h2>
                     <button class="help-icon-btn" data-help-topic="glossaries" title="Glossary help" aria-label="Glossary help">?</button>
                 </div>
-                <button class="icon-btn" id="closeGlossaryModal" title="Close">✕</button>
+                <button class="icon-btn" id="closeGlossaryModal" title="Close"><span data-icon="close"></span></button>
             </div>
             <div class="app-modal-body">
                 <div id="glossaryModalContent"></div>
@@ -411,12 +475,12 @@
 
     
     <div class="app-modal" id="summaryModal" aria-hidden="true">
-        <div class="app-modal-dialog">
+        <div class="app-modal-dialog" role="dialog" aria-modal="true" aria-label="Session Summary">
             <div class="app-modal-header">
                 <div class="section-title-inline">
                     <h2>Session Summary</h2>
                 </div>
-                <button class="icon-btn" id="closeSummaryModal" title="Close">✕</button>
+                <button class="icon-btn" id="closeSummaryModal" title="Close"><span data-icon="close"></span></button>
             </div>
             <div class="app-modal-body">
                 <pre class="summary-content" id="summaryContent"></pre>
@@ -426,10 +490,10 @@
 
     
     <div class="app-modal" id="helpModal" aria-hidden="true">
-        <div class="app-modal-dialog">
+        <div class="app-modal-dialog" role="dialog" aria-modal="true" aria-label="Help">
             <div class="app-modal-header">
                 <h2 id="helpModalTitle">Help</h2>
-                <button class="icon-btn" id="closeHelpModal" title="Close">✕</button>
+                <button class="icon-btn" id="closeHelpModal" title="Close"><span data-icon="close"></span></button>
             </div>
             <div class="app-modal-body">
                 <div class="help-modal-content" id="helpModalContent"></div>
@@ -442,20 +506,28 @@
         <div class="keyboard-container">
             <div class="keyboard-header">
                 <select id="keyboardLayout"></select>
-                <button class="icon-btn" id="keyboardClose">✕</button>
+                <button class="icon-btn" id="keyboardClose"><span data-icon="close"></span></button>
             </div>
             <div class="keyboard-keys" id="keyboardKeys"></div>
         </div>
     </div>
 
     
-    <div class="toast-container" id="toastContainer"></div>
+    <!-- Screen-reader announcement regions. Visually hidden; populated by
+         announce() in app.js. Deliberately outside <main> so announcements
+         still reach assistive tech while presentation mode hides main. -->
+    <div class="sr-only" id="a11yPoliteRegion" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div class="sr-only" id="a11yAssertiveRegion" role="alert" aria-live="assertive" aria-atomic="true"></div>
+
+    <!-- Visible toasts are announced through the regions above, so the visual
+         copies are hidden from assistive tech to avoid duplicate speech. -->
+    <div class="toast-container" id="toastContainer" aria-hidden="true"></div>
 
     <footer class="app-footer">
         <div class="footer-left">
             <div class="status-indicators">
-                <span class="status-badge" id="offlineIndicator" style="display: none;" title="Running in offline mode">📡 Offline</span>
-                <span class="status-badge" id="offlineReadyIndicator" style="display:none;" title="Offline readiness">⚠ Offline Not Ready</span>
+                <span class="status-badge" id="offlineIndicator" style="display: none;" title="Running in offline mode"><span data-icon="signal" data-icon-size="13"></span> Offline</span>
+                <span class="status-badge" id="offlineReadyIndicator" style="display:none;" title="Offline readiness"><span data-icon="warning" data-icon-size="13"></span> Offline Not Ready</span>
                 <span class="status-dot" id="libreStatus" title="LibreTranslate"></span>
                 <span class="status-dot" id="whisperStatus" title="Whisper STT"></span>
             </div>
@@ -478,27 +550,28 @@
     <div class="presentation-overlay" id="presentationOverlay" style="display:none;">
         <div class="presentation-topbar">
             <div class="presentation-topbar-left">
-                <span class="presentation-badge">📺 Presentation Mode</span>
+                <span class="presentation-badge"><span data-icon="present"></span> Presentation Mode</span>
                 <span class="presentation-panel-label">Show translation from</span>
                 <div class="presentation-panel-buttons" role="group" aria-label="Choose which translation to present">
                     <button class="presentation-panel-btn active" id="presentationPanelLeft" data-panel="left">Left panel</button>
                     <button class="presentation-panel-btn" id="presentationPanelRight" data-panel="right">Right panel</button>
                 </div>
-                <button class="btn-secondary presentation-mic-btn" id="presentationMicBtn" title="Enable the microphone">🎤 Enable Mic</button>
+                <button class="btn-secondary presentation-mic-btn" id="presentationMicBtn" title="Enable the microphone"><span data-icon="mic"></span> Enable Mic</button>
             </div>
-            <button class="btn-secondary" id="presentationExit">✕ Exit</button>
+            <button class="btn-secondary" id="presentationExit"><span data-icon="close"></span> Exit</button>
         </div>
         <div class="presentation-content">
             <div class="presentation-lang-label" id="presentationLangLabel">Translation</div>
-            <div class="presentation-text" id="presentationText">Waiting for translation...</div>
+            <div class="presentation-text" id="presentationText" dir="auto">Waiting for translation...</div>
         </div>
     </div>
 
     
-    <script src="/static/api-manager.js"></script>
-    <script src="/static/speech-manager.js"></script>
-    <script src="/static/keyboard-manager.js"></script>
-    <script src="/static/app.js"></script>
-    <script src="/static/auth-widget.js"></script>
+    <script src="/static/icons.js?v={{ asset_version }}"></script>
+    <script src="/static/api-manager.js?v={{ asset_version }}"></script>
+    <script src="/static/speech-manager.js?v={{ asset_version }}"></script>
+    <script src="/static/keyboard-manager.js?v={{ asset_version }}"></script>
+    <script src="/static/app.js?v={{ asset_version }}"></script>
+    <script src="/static/auth-widget.js?v={{ asset_version }}"></script>
 </body>
 </html>

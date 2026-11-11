@@ -1,0 +1,28 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Environment & secrets (never send to the build context)
+.env
+.env.*
+
+# Local runtime data (sessions, DB, secrets, logs, uploads, models)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Build / tooling / temp (not needed in image context)
+.trivyignore
+temp/
+
+# OS junk
+.DS_Store

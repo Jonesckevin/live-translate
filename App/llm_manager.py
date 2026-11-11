@@ -76,6 +76,32 @@ def _is_ssrf_target(host):
 
     return any(_address_is_forbidden(c) for c in candidates)
 
+def _normalize_stt_segments(raw_segments):
+    """Normalize provider STT segments to {start, end, text, speaker}.
+
+    Providers differ in shape and diarize-capable models add a speaker label.
+    Returning one shape lets whisper and provider output share the speaker
+    alignment code in diarization_utils.
+    """
+    normalized = []
+    if not isinstance(raw_segments, list):
+        return normalized
+    for seg in raw_segments:
+        if not isinstance(seg, dict):
+            continue
+        text = str(seg.get('text') or '').strip()
+        if not text:
+            continue
+        speaker = seg.get('speaker')
+        normalized.append({
+            'start': seg.get('start'),
+            'end': seg.get('end'),
+            'text': text,
+            'speaker': str(speaker).strip() if speaker not in (None, '') else None,
+        })
+    return normalized
+
+
 class LLMManager:
     """Unified LLM client supporting multiple providers."""
 
@@ -554,9 +580,12 @@ class LLMManager:
             if api_key:
                 headers['Authorization'] = f'Bearer {api_key}'
 
+            # Diarize-capable models need the diarized response format or they
+            # return plain text with the speaker labels discarded.
+            is_diarize_model = 'diarize' in (model or '').lower()
             data = {
                 'model': model,
-                'response_format': 'json',
+                'response_format': 'diarized_json' if is_diarize_model else 'json',
                 'temperature': '0',
             }
             if language and language != 'auto':
@@ -580,9 +609,12 @@ class LLMManager:
                     return {
                         'success': True,
                         'text': payload.get('text', ''),
+                        'segments': _normalize_stt_segments(payload.get('segments')),
+                        'diarized': is_diarize_model,
                         'raw': payload,
                     }
-                return {'success': True, 'text': response.text.strip(), 'raw': None}
+                return {'success': True, 'text': response.text.strip(),
+                        'segments': [], 'diarized': False, 'raw': None}
 
             error_msg = f"HTTP {response.status_code}"
             try:
@@ -605,7 +637,7 @@ class LLMManager:
             return {'success': False, 'error': str(e)}
 
     @staticmethod
-    def translate(text, target_language, provider, model, api_key=None, custom_config=None, ai_auto_correct=True, context=None):
+    def translate(text, target_language, provider, model, api_key=None, custom_config=None, ai_auto_correct=True, context=None, glossary_terms=None):
         instructions = [
             "1. **Preserve Structure:** Maintain all original formatting, line breaks, paragraphs, and spacing",
         ]
@@ -625,7 +657,7 @@ class LLMManager:
         context_block = ''
         if context:
             context_lines = []
-            for item in context[-4:]:
+            for item in context[-6:]:
                 src = (item.get('source_text') or item.get('source') or '').strip()
                 tgt = (item.get('translated_text') or item.get('translated') or '').strip()
                 if src and tgt:
@@ -637,6 +669,36 @@ class LLMManager:
                     + '\n\nKeep terminology, topics, and style consistent with this prior conversation when translating the new text below.'
                 )
 
+        glossary_block = ''
+        if glossary_terms:
+            term_lines = []
+            for item in glossary_terms[:40]:
+                src = (item.get('source_term') or '').strip()
+                tgt = (item.get('target_term') or '').strip()
+                if not src or not tgt:
+                    continue
+                details = [d for d in ((item.get('part_of_speech') or '').strip(),
+                                       (item.get('description') or '').strip()) if d]
+                line = f'- "{src}" => "{tgt}"'
+                if details:
+                    line += f" ({'; '.join(details)})"
+                note = (item.get('usage_note') or '').strip()
+                if note:
+                    line += f'\n    note: {note}'
+                example = (item.get('example') or '').strip()
+                if example:
+                    line += f'\n    example: {example}'
+                prohibited = item.get('prohibited') or []
+                if prohibited:
+                    line += f"\n    do NOT use: {', '.join(str(p) for p in prohibited)}"
+                term_lines.append(line)
+            if term_lines:
+                glossary_block = (
+                    '\n\n**Required Terminology (binding):**\n'
+                    + '\n'.join(term_lines)
+                    + '\n\nIf a source term above appears in the text, you MUST use its listed translation. Adapt the surrounding grammar so the result stays natural; never leave the term untranslated or invent a synonym.'
+                )
+
         system_prompt = f"""You are an expert translator.
 
 **Your Task:** Translate the following text to {target_language} using accurate and professional setting style writing.
@@ -644,6 +706,7 @@ class LLMManager:
 **Critical Instructions:**
 {chr(10).join(instructions)}
 {context_block}
+{glossary_block}
 **Output Requirements:**
 - Output ONLY the translated text
 - Do NOT add explanations, notes, or meta-commentary

@@ -39,6 +39,24 @@ DEFAULT_SETTINGS = {
     'speech_mode': 'standard',
     'offline_mode': 'auto',
     'offline_strict': False,
+    # Screen-reader announcements. Every category is opt-in (off by default).
+    'a11y_announce_translations': False,
+    'a11y_announce_source': False,
+    'a11y_announce_mic_state': False,
+    'a11y_announce_toasts': False,
+    # Conversation memory (LLM engines only; LibreTranslate is stateless).
+    'context_enabled': True,
+    'context_max_items': 6,
+    'context_max_chars': 1200,
+    # 'prompt' injects terminology into the LLM prompt (better fluency),
+    # 'substitute' pre-replaces terms, 'both' does both.
+    'glossary_mode': 'prompt',
+    # Speaker attribution. These are defaults for new sessions; a session can
+    # override them through its own speaker_names map. Diarization is opt-in
+    # because it only helps mixed-audio recordings, never live dual-panel use.
+    'speaker_left_name': 'Speaker 1',
+    'speaker_right_name': 'Speaker 2',
+    'stt_diarization': False,
 }
 
 def _ensure_file():

@@ -129,6 +129,11 @@
                 const data = await res.json();
                 userSettings = data.settings;
                 
+                // saveSettings swaps in a new settings object; keep the window
+                // reference on the live object so other modules (speech-manager,
+                // api-manager) and announce() don't read stale values.
+                window.userSettings = userSettings;
+
                 if (userSettings && userSettings.storage === 'browser') {
                     try { sessionStorage.setItem('lt_settings', JSON.stringify(userSettings)); } catch (e) {  }
                 }
@@ -158,6 +163,7 @@
                 userSettings = data.settings;
                 
                 
+                window.userSettings = userSettings;
                 localStorage.clear();
                 sessionStorage.removeItem('lt_settings');
                 
@@ -420,6 +426,7 @@
             const session = data.session;
             if (!session || !session.id) return;
 
+            activeShareCode = code;
             activateSession(session.id, session.title || '', session.icon_url || '');
             await restoreSessionMessages(session.id);
             await loadSessions();
@@ -593,26 +600,47 @@
                 title: 'Speech Settings Help',
                 html: '<p>Speech settings control recognition and playback output.</p><ul><li>Web Speech API is browser-based.</li><li>Whisper is server-based and better for offline use.</li><li>Choose voice mode and select one or more playback voices.</li></ul>',
             },
+            accessibility: {
+                title: 'Accessibility Help',
+                html: '<p>These options announce activity so screen readers can follow a conversation. All are off by default.</p><ul><li>Announce new translations: speaks each finished translation once, never the interim word-by-word updates.</li><li>Include the original text: also reads what was said before the translation.</li><li>Announce microphone on/off: confirms hands-free when dictation starts or stops.</li><li>Announce notifications: speaks saved sessions, connection problems, and copies. Errors are announced immediately.</li></ul><p>Announcements use your screen reader voice. Text is also tagged with its language so the correct voice and direction are used.</p>',
+            },
             glossaries: {
                 title: 'Glossary Help',
                 html: '<p>Glossaries keep translations consistent for domain terms, names, and phrases.</p><ul><li>Prepare a CSV/JSON/TSV/TXT glossary file.</li><li>Set source and target language pair.</li><li>Import and verify entry count.</li><li>Delete old glossaries when terminology changes.</li></ul>',
             },
         };
 
+        let focusBeforeModal = null;
+
         const openModal = (modal) => {
             if (!modal) return;
+            focusBeforeModal = document.activeElement;
             modal.classList.add('active');
             modal.setAttribute('aria-hidden', 'false');
             document.body.classList.add('modal-open');
+            // Focus the dialog itself so screen readers announce the heading and
+            // keyboard users are not left behind on the page underneath.
+            const dialog = modal.querySelector('.app-modal-dialog');
+            if (dialog) {
+                if (!dialog.hasAttribute('tabindex')) dialog.setAttribute('tabindex', '-1');
+                dialog.focus();
+            }
         };
 
         const closeModal = (modal) => {
             if (!modal) return;
+            const wasActive = modal.classList.contains('active');
             modal.classList.remove('active');
             modal.setAttribute('aria-hidden', 'true');
             if (!document.querySelector('.app-modal.active')) {
                 document.body.classList.remove('modal-open');
             }
+            // Escape closes every modal in a loop, so only the one that was
+            // actually open may move focus back.
+            if (wasActive && focusBeforeModal && typeof focusBeforeModal.focus === 'function') {
+                focusBeforeModal.focus();
+            }
+            if (wasActive) focusBeforeModal = null;
         };
 
         const openHelpModal = (topic) => {
@@ -967,10 +995,32 @@
         currentSessionId = data.id;
         currentSessionTitle = data.title || fallbackTitle;
         currentSessionIconUrl = data.icon_url || '';
+        // Seed the session with the configured speaker names so transcripts,
+        // summaries and live views agree with the UI from the first message.
+        currentSpeakerNames = {};
+        await seedDefaultSpeakerNames();
         requiresInitialSessionSelection = false;
         updateActiveSessionSummary();
         await loadSessions();
         return currentSessionId;
+    }
+
+    async function seedDefaultSpeakerNames() {
+        if (!currentSessionId) return;
+        const names = {};
+        if (userSettings.speaker_left_name) names.left = userSettings.speaker_left_name;
+        if (userSettings.speaker_right_name) names.right = userSettings.speaker_right_name;
+        if (!Object.keys(names).length) return;
+        currentSpeakerNames = { ...names };
+        try {
+            await fetch(`/api/sessions/${currentSessionId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ speaker_names: currentSpeakerNames }),
+            });
+        } catch (e) {
+            // Non-fatal: the UI still falls back to the settings values.
+        }
     }
 
     async function fetchSessions() {
@@ -1009,6 +1059,18 @@
         setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
         refreshPushToTalkButton(side);
 
+        // Warm the browser's on-device capability for this panel's language.
+        // Knowing "downloadable" *before* the click is what lets the click call
+        // SpeechRecognition.install() while its user gesture is still valid.
+        const langSelect = document.getElementById(`conv${cap(side)}Lang`);
+        const primeOnDevice = () => {
+            const value = langSelect ? langSelect.value : 'en';
+            if (!value || value === 'auto') return;
+            speechInst.primeOnDeviceAvailability(value).catch(() => {});
+        };
+        primeOnDevice();
+        langSelect?.addEventListener('change', primeOnDevice);
+
         const stopListening = (trigger = 'toggle') => {
             if (!speechInst.isListening) return;
             speechInst.stop();
@@ -1024,7 +1086,10 @@
             const otherInst = convSpeechInstances[otherSide];
             // Prefer the server-persisted STT engine (loaded into userSettings),
             // falling back to the global manager (localStorage) and then default.
-            const engine = (userSettings && userSettings.stt_engine) || window.speechManager?.sttEngine || 'web_speech_api';
+            const storedEngine = (userSettings && userSettings.stt_engine) || window.speechManager?.sttEngine || 'web_speech_api';
+            // Once a panel has been switched to server-side Whisper it is no
+            // longer bound by the browser engine's one-microphone limit.
+            const engine = speechInst.fallbackActive ? 'whisper' : storedEngine;
 
             
             
@@ -1067,6 +1132,12 @@
 
                 if (nextState === 'listening') {
                     setMicButtonState(micBtn, 'active', 'Start speaking', micStateEl);
+                    // Show which engine is actually recording. The switch to the
+                    // local engine is announced once per change; this keeps it
+                    // visible on every later session too.
+                    statusEl.textContent = speechInst.sttEngine === 'whisper'
+                        ? 'Whisper (local)'
+                        : (speechInst.sttEngine === 'ai_provider' ? 'Provider STT' : '');
                     return;
                 }
 
@@ -1096,8 +1167,14 @@
                 setMicButtonState(micBtn, 'idle', 'Start speaking', micStateEl);
                 showToast(msg, 'error');
             };
+            // Non-error feedback from the engine, e.g. swapping the browser
+            // engine for the local one when its service is unreachable.
+            speechInst.onNotice = (msg, type) => showToast(msg, type || 'info', 8000);
 
             speechInst.setEngine((userSettings && userSettings.stt_engine) || window.speechManager?.sttEngine || 'web_speech_api');
+            // Refresh the capability for this language in the background: it lets
+            // the next click download the on-device model inside its gesture.
+            if (lang && lang !== 'auto') speechInst.primeOnDeviceAvailability(lang).catch(() => {});
             speechInst.start(lang);
             return true;
         };
@@ -1339,14 +1416,16 @@
         if (!ttsBtn) return;
 
         let reading = false;
-        const defaultLabel = ttsBtn.textContent;
+        // The button ships a hydrated inline SVG (icons.js), so remember the
+        // markup rather than textContent - restoring text would drop the icon.
+        const defaultIcon = ttsBtn.innerHTML;
         const defaultTitle = ttsBtn.title;
 
         const resetBtn = () => {
             reading = false;
             ttsBtn.classList.remove('reading');
             ttsBtn.disabled = false;
-            ttsBtn.textContent = defaultLabel;
+            ttsBtn.innerHTML = defaultIcon;
             ttsBtn.title = defaultTitle;
         };
 
@@ -1354,7 +1433,7 @@
             reading = true;
             ttsBtn.classList.add('reading');
             ttsBtn.disabled = false;
-            ttsBtn.textContent = '⏹';
+            ttsBtn.innerHTML = window.Icons ? Icons.svg('stop') : 'Stop';
             ttsBtn.title = 'Stop reading';
         };
 
@@ -1460,7 +1539,11 @@
                 rec.start();
                 recordingState.recording = true;
                 recordingState.startedAt = Date.now();
-                if (btn) { btn.textContent = '⏹ Stop'; btn.classList.add('recording'); btn.title = 'Stop recording'; }
+                if (btn) {
+                    btn.innerHTML = (window.Icons ? Icons.svg('stop') : '') + ' Stop';
+                    btn.classList.add('recording');
+                    btn.title = 'Stop recording';
+                }
                 showToast('Recording started', 'success');
             } catch (e) {
                 showToast('Microphone access denied', 'error');
@@ -1468,7 +1551,11 @@
         } else {
             try { recordingState.mediaRecorder?.stop(); } catch (e) {}
             recordingState.recording = false;
-            if (btn) { btn.textContent = '⏺ Record'; btn.classList.remove('recording'); btn.title = 'Record this session'; }
+            if (btn) {
+                btn.innerHTML = (window.Icons ? Icons.svg('record') : '') + ' Record';
+                btn.classList.remove('recording');
+                btn.title = 'Record this session';
+            }
         }
     }
 
@@ -1535,6 +1622,103 @@
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Conversation memory
+    //
+    // One rolling buffer shared by BOTH panels, so a two-way exchange forms a
+    // single conversation instead of two unrelated ones. Entries carry the
+    // language pair that produced them, which keeps the memory relevant in a
+    // session that mixes directions. LLM engines only: LibreTranslate is
+    // stateless and ignores context.
+    // -----------------------------------------------------------------------
+    let conversationContext = [];
+
+    function getContextMaxItems() {
+        const value = parseInt(userSettings && userSettings.context_max_items, 10);
+        return Number.isFinite(value) && value > 0 ? value : 6;
+    }
+
+    function getContextMaxChars() {
+        const value = parseInt(userSettings && userSettings.context_max_chars, 10);
+        return Number.isFinite(value) && value > 0 ? value : 1200;
+    }
+
+    function isConversationContextEnabled() {
+        return !(userSettings && userSettings.context_enabled === false);
+    }
+
+    function getGlossaryMode() {
+        const mode = userSettings && userSettings.glossary_mode;
+        return (mode === 'substitute' || mode === 'both') ? mode : 'prompt';
+    }
+
+    function clearConversationContext() {
+        conversationContext = [];
+    }
+
+    function getContextEntrySize(entry) {
+        return (entry.source_text || '').length + (entry.translated_text || '').length;
+    }
+
+    function trimConversationContext() {
+        const maxItems = getContextMaxItems();
+        if (conversationContext.length > maxItems) {
+            conversationContext.splice(0, conversationContext.length - maxItems);
+        }
+        // Trim from the oldest end so the most recent turns always survive.
+        const maxChars = getContextMaxChars();
+        let total = conversationContext.reduce((n, e) => n + getContextEntrySize(e), 0);
+        while (conversationContext.length > 1 && total > maxChars) {
+            total -= getContextEntrySize(conversationContext.shift());
+        }
+    }
+
+    function pushContextEntry(sourceText, translatedText, sourceLang, targetLang) {
+        const src = (sourceText || '').trim();
+        const tgt = (translatedText || '').trim();
+        if (!src || !tgt) return;
+        conversationContext.push({
+            source_text: src,
+            translated_text: tgt,
+            source_language: sourceLang || '',
+            target_language: targetLang || '',
+        });
+        trimConversationContext();
+    }
+
+    function seedConversationContextFromMessages(messages) {
+        clearConversationContext();
+        if (!Array.isArray(messages)) return;
+        // Only finalized turns are useful as memory, and only the recent tail.
+        const usable = messages.filter(m => m && (m.source_text || '').trim() && (m.translated_text || '').trim());
+        for (const msg of usable.slice(-getContextMaxItems())) {
+            conversationContext.push({
+                source_text: String(msg.source_text).trim(),
+                translated_text: String(msg.translated_text).trim(),
+                source_language: msg.source_language || '',
+                target_language: msg.target_language || '',
+            });
+        }
+        trimConversationContext();
+    }
+
+    function getContextPayload(targetLang) {
+        if (!isConversationContextEnabled()) return [];
+        trimConversationContext();
+        // Prefer turns that translated into the language we are producing now,
+        // then keep the rest: they still inform tone and topic.
+        const matching = [];
+        const others = [];
+        for (const entry of conversationContext) {
+            if (targetLang && entry.target_language === targetLang) matching.push(entry);
+            else others.push(entry);
+        }
+        return [...matching, ...others].map(entry => ({
+            source_text: entry.source_text,
+            translated_text: entry.translated_text,
+        }));
+    }
+
     function createLiveState() {
         return {
             finalText: '',
@@ -1547,7 +1731,6 @@
             debounceTimer: null,
             sourceBubble: null,
             targetBubble: null,
-            context: [],
         };
     }
 
@@ -1747,7 +1930,8 @@
             interim: !isFinal,
             request_id: requestId,
             ai_auto_correct: getAIAutoCorrectSetting(),
-            context: state.context,
+            context: getContextPayload(tgtLang),
+            glossary_mode: getGlossaryMode(),
             offset_ms: getRecordingOffsetMs(),
         });
 
@@ -1839,6 +2023,8 @@
             api_key: apiKey,
             api_key_source: apiKeySource,
             ai_auto_correct: getAIAutoCorrectSetting(),
+            context: getContextPayload(tgtLang),
+            glossary_mode: getGlossaryMode(),
             offset_ms: getRecordingOffsetMs(),
         });
 
@@ -1864,7 +2050,7 @@
                 }
             }
 
-            let translatedText = effectiveResult.success ? effectiveResult.translated_text : `⚠ ${effectiveResult.error}`;
+            let translatedText = effectiveResult.success ? effectiveResult.translated_text : `Error: ${effectiveResult.error}`;
             if (effectiveResult.success && window.llmAPIManager) {
                 translatedText = window.llmAPIManager.postProcessTranslation(translatedText);
             }
@@ -1881,14 +2067,16 @@
 
             if (!effectiveResult.interim && effectiveResult.success) {
                 maybeAutoSpeakTranslation(otherSide, translatedText);
+                announceTranslation(otherSide, effectiveResult.original_text || '', translatedText);
                 // Keep a small rolling buffer of finalized utterances so LLM
                 // translations can stay consistent with recent conversation
                 // topics and terminology.
-                state.context.push({
-                    source_text: effectiveResult.original_text || '',
-                    translated_text: translatedText,
-                });
-                if (state.context.length > 4) state.context.splice(0, state.context.length - 4);
+                pushContextEntry(
+                    effectiveResult.original_text || '',
+                    translatedText,
+                    effectiveResult.source_language || '',
+                    effectiveResult.target_language || ''
+                );
             }
 
             if (!effectiveResult.interim) {
@@ -1930,11 +2118,12 @@
             }
             addConvBubble(otherSide, translated, 'translated');
             maybeAutoSpeakTranslation(otherSide, translated);
+            announceTranslation(otherSide, effectiveResult.original_text || '', translated);
             // The server already persists successful non-interim translations to
             // the session (session_manager.add_message), so the client must NOT
             // POST here again or every message would be duplicated in history.
         } else {
-            addConvBubble(otherSide, `⚠ ${effectiveResult.error}`, 'translated');
+            addConvBubble(otherSide, `Error: ${effectiveResult.error}`, 'translated');
             // Errors are intentionally not persisted to session history.
         }
     }
@@ -1943,7 +2132,7 @@
         createConvBubble(side, text, type, false);
     }
 
-    function createConvBubble(side, text, type, isLive, timestamp = null) {
+    function createConvBubble(side, text, type, isLive, timestamp = null, langCode = null) {
         const container = document.getElementById(`conv${cap(side)}Messages`);
         const bubble = document.createElement('div');
         bubble.className = `conv-message ${type}`;
@@ -1954,6 +2143,7 @@
         const body = document.createElement('div');
         body.className = 'msg-text';
         body.textContent = text;
+        applyTextLanguage(body, langCode === null ? getPanelLanguageCode(side) : langCode);
 
         const meta = document.createElement('div');
         meta.className = 'msg-meta';
@@ -2180,6 +2370,128 @@
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Speaker attribution
+    //
+    // Live conversation attribution comes free from the microphone channel
+    // (each panel has its own device), so this is about turning the stored key
+    // into a name a human recognises, and letting that name be changed.
+    // -----------------------------------------------------------------------
+    let currentSpeakerNames = {};
+    // Retained when a session is opened through a share link so the live socket
+    // join can be authorised for a reader who does not own the session.
+    let activeShareCode = '';
+
+    function humanizeSpeakerKey(key) {
+        if (key === 'left' || key === 'right') return cap(key);
+        if (key.startsWith('speaker_')) {
+            const suffix = key.slice('speaker_'.length);
+            return /^\d+$/.test(suffix) ? `Speaker ${suffix}` : key;
+        }
+        return key ? cap(key) : '';
+    }
+
+    function getSpeakerDisplayName(key) {
+        const clean = (key || '').trim();
+        if (!clean) return '';
+        if (currentSpeakerNames[clean]) return currentSpeakerNames[clean];
+        // Fall back to the configured names so a fresh session already reads
+        // sensibly before anyone renames anything.
+        if (clean === 'left' && userSettings.speaker_left_name) return userSettings.speaker_left_name;
+        if (clean === 'right' && userSettings.speaker_right_name) return userSettings.speaker_right_name;
+        return humanizeSpeakerKey(clean);
+    }
+
+    function speakerChipClass(key) {
+        if (key === 'left' || key === 'speaker_1') return 'speaker-chip-a';
+        if (key === 'right' || key === 'speaker_2') return 'speaker-chip-b';
+        return 'speaker-chip-c';
+    }
+
+    async function saveSpeakerName(key, name) {
+        if (!currentSessionId) return false;
+        const previous = { ...currentSpeakerNames };
+        currentSpeakerNames = { ...currentSpeakerNames, [key]: name };
+        try {
+            const res = await fetch(`/api/sessions/${currentSessionId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ speaker_names: currentSpeakerNames }),
+            });
+            if (!res.ok) throw new Error('save failed');
+            showToast(`Speaker renamed to ${name}`, 'success');
+            return true;
+        } catch (e) {
+            currentSpeakerNames = previous;
+            showToast('Failed to save speaker name', 'error');
+            return false;
+        }
+    }
+
+    // Inline editing rather than window.prompt(): prompt() is unavailable in
+    // installed/PWA and automated contexts, and blocking dialogs are poor UX.
+    function beginSpeakerRename(container, chip, key, originalLabel) {
+        if (!key) return;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'speaker-chip-input';
+        input.value = originalLabel || '';
+        input.maxLength = 60;
+        input.setAttribute('aria-label', 'Speaker name');
+        chip.replaceWith(input);
+        input.focus();
+        input.select();
+
+        let settled = false;
+        const finish = async (save) => {
+            if (settled) return;
+            settled = true;
+
+            const proposed = input.value.trim();
+            const label = (!save || !proposed) ? (originalLabel || '') : proposed;
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = chip.className;
+            button.dataset.speakerKey = key;
+            button.title = 'Rename this speaker';
+            button.textContent = label;
+            input.replaceWith(button);
+            button.addEventListener('click', () => {
+                beginSpeakerRename(container, button, key, button.textContent.trim());
+            });
+
+            if (!save || !proposed || proposed === originalLabel) return;
+            const saved = await saveSpeakerName(key, proposed);
+            if (!saved) {
+                button.textContent = originalLabel || '';
+                return;
+            }
+            // Reflect the rename on every chip for this speaker.
+            container.querySelectorAll('.speaker-chip').forEach((other) => {
+                if (other.dataset.speakerKey === key) other.textContent = proposed;
+            });
+        };
+
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                void finish(true);
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                void finish(false);
+            }
+        });
+        input.addEventListener('blur', () => { void finish(true); });
+    }
+
+    function bindSpeakerChipRenaming(container) {
+        container.querySelectorAll('.speaker-chip').forEach((chip) => {
+            chip.addEventListener('click', () => {
+                beginSpeakerRename(container, chip, chip.dataset.speakerKey || '', chip.textContent.trim());
+            });
+        });
+    }
+
     async function restoreSessionMessages(sessionId) {
         
         try {
@@ -2202,6 +2514,10 @@
                 
                 createConvBubble(otherSide, msg.translated_text || '', 'translated', false, msg.timestamp);
             }
+
+            // Rebuild conversation memory from history so a reloaded or
+            // resumed session keeps its context instead of starting blind.
+            seedConversationContextFromMessages(data.messages || []);
         } catch (e) {
             console.error('Failed to restore session messages:', e);
         }
@@ -2212,6 +2528,8 @@
             const res = await fetch(`/api/sessions/${sessionId}`);
             const data = await res.json();
             activateSession(sessionId, data.title || '', data.icon_url || '');
+            // Names are per session; load them before rendering any history.
+            currentSpeakerNames = data.speaker_names || {};
 
             document.getElementById('sessionsList').style.display = 'none';
             document.getElementById('sessionDetail').style.display = 'block';
@@ -2271,7 +2589,7 @@
                     const d = await r.json();
                     if (r.ok) {
                         visFeedback.style.color = 'var(--success, #86efac)';
-                        visFeedback.textContent = '✓ Access settings saved';
+                        visFeedback.textContent = 'Access settings saved';
                         passInput.value = '';
                         passEnabled.checked = !!d.has_password;
                         passInput.style.display = passEnabled.checked ? '' : 'none';
@@ -2316,13 +2634,19 @@
                 const el = document.createElement('div');
                 el.className = 'session-msg';
                 if (Number.isFinite(Number(msg.offset_ms))) el.dataset.offset = String(msg.offset_ms);
+                const speakerKey = (msg.speaker || msg.panel || '').trim();
+                const speakerName = getSpeakerDisplayName(speakerKey);
+                const speakerHtml = speakerName
+                    ? `<button type="button" class="speaker-chip ${speakerChipClass(speakerKey)}" data-speaker-key="${escapeHtml(speakerKey)}" title="Rename this speaker">${escapeHtml(speakerName)}</button> · `
+                    : '';
                 el.innerHTML = `
                     <div class="source">${escapeHtml(msg.source_text || '')}</div>
                     <div class="translation">${escapeHtml(msg.translated_text || '')}</div>
-                    <div class="meta">${msg.speaker ? `${escapeHtml(msg.speaker)} · ` : ''}${msg.source_language} → ${msg.target_language} · ${msg.engine || ''} · ${formatDate(msg.timestamp)}</div>
+                    <div class="meta">${speakerHtml}${escapeHtml(msg.source_language || '')} → ${escapeHtml(msg.target_language || '')} · ${escapeHtml(msg.engine || '')} · ${formatDate(msg.timestamp)}</div>
                 `;
                 container.appendChild(el);
             }
+            bindSpeakerChipRenaming(container);
 
             const syncCaptionsToAudio = (ms) => {
                 const items = Array.from(container.querySelectorAll('.session-msg'));
@@ -2350,15 +2674,28 @@
         if (currentSessionId && currentSessionId !== sessionId && socket) {
             socket.emit('leave_session_room', { session_id: currentSessionId });
         }
+        // Memory and speaker names belong to one conversation; never carry
+        // them across sessions. openSession() re-loads both afterwards.
+        if (currentSessionId !== sessionId) {
+            clearConversationContext();
+            currentSpeakerNames = {};
+            resetLiveViewQr();
+        }
         currentSessionId = sessionId;
         currentSessionTitle = sessionTitle || '';
         currentSessionIconUrl = iconUrl || '';
         requiresInitialSessionSelection = false;
         highlightActiveSession(sessionId);
         updateActiveSessionSummary();
+        applySessionSharingAvailability();
         
         if (sessionId && socket) {
-            socket.emit('join_session_room', { session_id: sessionId });
+            // The share code travels with the join so the server can authorise
+            // readers who reached this session through a share link.
+            socket.emit('join_session_room', {
+                session_id: sessionId,
+                share_code: activeShareCode || '',
+            });
         }
     }
 
@@ -2503,28 +2840,104 @@
         document.body.classList.add('modal-open');
     }
 
+    function isSessionSharingEnabled() {
+        const features = appConfig && appConfig.features;
+        // An absent flag means an older/unknown config: assume sharing is
+        // allowed and let the server remain the authority.
+        return !features || features.session_sharing_enabled !== false;
+    }
+
+    // Sharing can be switched off by an administrator, in which case the button
+    // is disabled up front instead of failing after the click.
+    function applySessionSharingAvailability() {
+        const btn = document.getElementById('sessionLiveViewBtn');
+        if (!btn) return;
+        const enabled = isSessionSharingEnabled();
+        btn.disabled = !enabled;
+        btn.title = enabled
+            ? 'Open a read-only live view link for this session'
+            : 'Session sharing is disabled by the administrator';
+    }
+
+    function resetLiveViewQr() {
+        const qrRow = document.getElementById('sessionQrRow');
+        const qrImg = document.getElementById('sessionQrImage');
+        const linkEl = document.getElementById('sessionQrLink');
+        if (qrImg) {
+            qrImg.removeAttribute('src');
+            qrImg.hidden = false;
+        }
+        if (linkEl) {
+            linkEl.hidden = true;
+            linkEl.textContent = '';
+        }
+        if (qrRow) qrRow.style.display = 'none';
+    }
+
+    // An <img src> request cannot carry the Authorization header — only
+    // window.fetch is patched to add it — so /api/qr answers 401 to a plain
+    // image request. Fetch it properly instead and inline the SVG as a data:
+    // URI: the app's CSP allows data: images but NOT blob:, so an object URL
+    // would be blocked. If the fetch fails, show the raw link so it is still
+    // usable.
+    async function showLiveViewQr(liveUrl) {
+        const qrRow = document.getElementById('sessionQrRow');
+        const qrImg = document.getElementById('sessionQrImage');
+        const linkEl = document.getElementById('sessionQrLink');
+        if (!qrRow || !qrImg) return;
+
+        try {
+            const res = await fetch(`/api/qr?text=${encodeURIComponent(liveUrl)}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const svg = await res.text();
+            qrImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+            qrImg.hidden = false;
+            if (linkEl) {
+                linkEl.hidden = true;
+                linkEl.textContent = '';
+            }
+        } catch (e) {
+            qrImg.removeAttribute('src');
+            qrImg.hidden = true;
+            if (linkEl) {
+                linkEl.hidden = false;
+                linkEl.textContent = liveUrl;
+            }
+            showToast('QR code unavailable — the shareable link is shown instead', 'warning', 6000);
+        }
+        qrRow.style.display = '';
+    }
+
     async function openLiveViewForCurrentSession() {
         if (!currentSessionId) { showToast('Select a session first', 'warning'); return; }
+        if (!isSessionSharingEnabled()) {
+            showToast('Session sharing is disabled by the administrator', 'warning', 5000);
+            return;
+        }
+
         let d;
         try {
             const r = await fetch(`/api/sessions/${currentSessionId}/share`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ access: 'view' }),
             });
-            if (!r.ok) { showToast('Failed to create live view link', 'error'); return; }
+            if (!r.ok) {
+                // Surface the server's actual reason (sharing disabled, no
+                // access, ...) rather than a generic failure.
+                let detail = '';
+                try { detail = (await r.json()).error || ''; } catch (e) { /* not JSON */ }
+                showToast(detail || `Failed to create live view link (HTTP ${r.status})`, 'error', 6000);
+                return;
+            }
             d = await r.json();
         } catch (e) {
             showToast('Failed to create live view link', 'error');
             return;
         }
+
         const liveUrl = `${location.origin}/live/${d.share_code}`;
         window.open(liveUrl, '_blank');
-        const qrRow = document.getElementById('sessionQrRow');
-        const qrImg = document.getElementById('sessionQrImage');
-        if (qrRow && qrImg) {
-            qrImg.src = `/api/qr?text=${encodeURIComponent(liveUrl)}`;
-            qrRow.style.display = '';
-        }
+        await showLiveViewQr(liveUrl);
     }
 
     function triggerSessionIconUpload() {
@@ -2860,11 +3273,11 @@
         const isServer = storage === 'server';
         
         if (isServer) {
-            storageEl.textContent = '🔒 Storage: Server (encrypted per-user)';
-            storageEl.style.color = '#28a745';
+            storageEl.innerHTML = (window.Icons ? Icons.svg('lock', { size: 14 }) : '') + ' Storage: Server (encrypted per-user)';
+            storageEl.style.color = '#22c55e';
         } else {
-            storageEl.textContent = '🌐 Storage: Browser Session (ephemeral)';
-            storageEl.style.color = '#ffc107';
+            storageEl.innerHTML = (window.Icons ? Icons.svg('globe', { size: 14 }) : '') + ' Storage: Browser Session (ephemeral)';
+            storageEl.style.color = '#f59e0b';
         }
 
         storageBtn.onclick = (e) => {
@@ -2888,7 +3301,7 @@
             
             const header = document.createElement('div');
             header.className = 'app-modal-header';
-            header.innerHTML = '<div style="font-weight: 600;">🔐 Storage Location</div>';
+            header.innerHTML = `<div style="display:flex;align-items:center;gap:6px;font-weight:600;">${window.Icons ? Icons.svg('lock') : ''} Storage Location</div>`;
             
             
             const body = document.createElement('div');
@@ -2900,15 +3313,15 @@
             
             if (!isServer) {
                 const cmdDiv = document.createElement('div');
-                cmdDiv.style.cssText = 'background: var(--bg-tertiary); padding: 12px; border-radius: 6px; font-family: "Fira Code", "Monaco", monospace; font-size: 12px; cursor: pointer; user-select: all; margin: 12px 0; word-break: break-all; transition: all 0.2s; line-height: 1.5;';
+                cmdDiv.style.cssText = 'background: var(--bg-tertiary); padding: 12px; border-radius: 6px; font-family: "Fira Code", "Monaco", monospace; font-size: 12px; cursor: pointer; user-select: all; margin: 12px 0; word-break: break-all; line-height: 1.5;';
                 cmdDiv.title = 'Click to copy';
                 
                 
-                cmdDiv.innerHTML = `<span style="color: #3b82f6;">sessionStorage</span><span style="color: #a0a0b0;">.</span><span style="color: #60a5fa;">getItem</span><span style="color: #a0a0b0;">(</span><span style="color: #86efac;">'</span><span style="color: #22c55e;">lt_settings</span><span style="color: #86efac;">'</span><span style="color: #a0a0b0;">)</span>`;
+                cmdDiv.innerHTML = `<span style="color: #7dd3fc;">sessionStorage</span><span style="color: #6b7688;">.</span><span style="color: #93c5fd;">getItem</span><span style="color: #6b7688;">(</span><span style="color: #86efac;">'</span><span style="color: #22c55e;">lt_settings</span><span style="color: #86efac;">'</span><span style="color: #6b7688;">)</span>`;
                 
                 cmdDiv.onmouseover = () => {
-                    cmdDiv.style.background = 'rgba(168, 85, 247, 0.15)';
-                    cmdDiv.style.boxShadow = '0 0 0 1px rgba(168, 85, 247, 0.3), inset 0 0 0 1px rgba(168, 85, 247, 0.1)';
+                    cmdDiv.style.background = 'var(--bg-hover)';
+                    cmdDiv.style.boxShadow = 'inset 0 0 0 1px var(--border-hover)';
                 };
                 cmdDiv.onmouseout = () => {
                     cmdDiv.style.background = 'var(--bg-tertiary)';
@@ -3021,7 +3434,7 @@
                         <select class="provider-model-select" data-provider="${id}">
                             <option value="">${preferredModel ? `${preferredModel} (saved)` : 'Preferred model'}</option>
                         </select>
-                        <button class="btn-secondary load-provider-models" data-provider="${id}" title="Refresh Models">🔄</button>
+                        <button class="btn-secondary load-provider-models" data-provider="${id}" title="Refresh Models">${window.Icons ? Icons.svg('refresh') : ''}</button>
                     </div>
                     <div class="provider-actions">
                         ${saveButtonHtml}
@@ -3245,6 +3658,37 @@
             if (sttProviderInfo) sttProviderInfo.style.display = useProviderSTT ? 'block' : 'none';
         }
 
+        // Whether the *browser* engine can recognise on-device (no internet).
+        // Chromium 138+/Edge ship an on-device model; other builds always need
+        // their vendor's online service, in which case Whisper covers offline use.
+        async function renderSTTEngineInfo() {
+            const el = document.getElementById('sttEngineInfo');
+            if (!el || typeof window.speechManager?.describeOnDeviceSupport !== 'function') return;
+
+            const lang = document.getElementById('convLeftLang')?.value || 'en';
+            let info;
+            try {
+                info = await window.speechManager.describeOnDeviceSupport(lang);
+            } catch (e) {
+                return;
+            }
+            if (!info) return;
+
+            if (!info.supported) {
+                el.innerHTML = '<p style="color: var(--text-muted);">This browser has no on-device speech model, so Browser recognition needs internet access. If it cannot reach its service, Whisper is used automatically.</p>';
+                return;
+            }
+
+            const langLabel = escapeHtml(info.lang);
+            if (info.state === 'available') {
+                el.innerHTML = `<p style="color: var(--success);">On-device speech model for ${langLabel} is installed: Browser recognition works without internet.</p>`;
+            } else if (info.state === 'downloadable' || info.state === 'downloading') {
+                el.innerHTML = `<p style="color: var(--warning);">The on-device speech model for ${langLabel} can be downloaded. Click a microphone once to fetch it, after which Browser recognition works offline.</p>`;
+            } else {
+                el.innerHTML = `<p style="color: var(--text-muted);">No on-device speech model for ${langLabel} in this browser, so Browser recognition needs internet access. Whisper covers the offline case automatically.</p>`;
+            }
+        }
+
         if (sttProviderSel) {
             sttProviderSel.innerHTML = '';
             for (const [id, provider] of sttProviders) {
@@ -3270,12 +3714,14 @@
         }
 
         syncSTTProviderVisibility();
+        renderSTTEngineInfo();
 
         sttSel.addEventListener('change', async () => {
             if (window.speechManager) {
                 await window.speechManager.setEngine(sttSel.value);
             }
             syncSTTProviderVisibility();
+            renderSTTEngineInfo();
             if (sttSel.value === 'ai_provider' && sttProviderSel?.value) {
                 await loadSTTModelsForProvider(sttProviderSel.value, window.speechManager?.getSTTSettings?.().model || '');
             }
@@ -3340,6 +3786,64 @@
                 showToast(ttsAutoSpeak.checked ? 'Auto-speak enabled' : 'Auto-speak disabled', 'success');
             });
         }
+
+        bindA11yToggle('a11yAnnounceTranslations', 'a11y_announce_translations', 'Translation announcements');
+        bindA11yToggle('a11yAnnounceSource', 'a11y_announce_source', 'Original text in announcements');
+        bindA11yToggle('a11yAnnounceMicState', 'a11y_announce_mic_state', 'Microphone announcements');
+        bindA11yToggle('a11yAnnounceToasts', 'a11y_announce_toasts', 'Notification announcements');
+
+        const contextEnabled = document.getElementById('contextEnabled');
+        if (contextEnabled) {
+            contextEnabled.checked = isConversationContextEnabled();
+            contextEnabled.addEventListener('change', () => {
+                void updateSetting('context_enabled', contextEnabled.checked);
+                showToast(contextEnabled.checked ? 'Conversation memory enabled' : 'Conversation memory disabled', 'success');
+            });
+        }
+
+        const contextMaxItems = document.getElementById('contextMaxItems');
+        if (contextMaxItems) {
+            contextMaxItems.value = String(getContextMaxItems());
+            contextMaxItems.addEventListener('change', () => {
+                const turns = parseInt(contextMaxItems.value, 10) || 6;
+                void updateSetting('context_max_items', turns);
+                trimConversationContext();
+            });
+        }
+
+        const glossaryModeSelect = document.getElementById('glossaryMode');
+        if (glossaryModeSelect) {
+            glossaryModeSelect.value = getGlossaryMode();
+            glossaryModeSelect.addEventListener('change', () => {
+                void updateSetting('glossary_mode', glossaryModeSelect.value);
+                showToast('Glossary handling updated', 'success');
+            });
+        }
+
+        const speakerLeftName = document.getElementById('speakerLeftName');
+        if (speakerLeftName) {
+            speakerLeftName.value = userSettings.speaker_left_name || '';
+            speakerLeftName.addEventListener('change', () => {
+                void updateSetting('speaker_left_name', speakerLeftName.value.trim());
+            });
+        }
+
+        const speakerRightName = document.getElementById('speakerRightName');
+        if (speakerRightName) {
+            speakerRightName.value = userSettings.speaker_right_name || '';
+            speakerRightName.addEventListener('change', () => {
+                void updateSetting('speaker_right_name', speakerRightName.value.trim());
+            });
+        }
+
+        const sttDiarization = document.getElementById('sttDiarization');
+        if (sttDiarization) {
+            sttDiarization.checked = !!(userSettings && userSettings.stt_diarization);
+            sttDiarization.addEventListener('change', () => {
+                void updateSetting('stt_diarization', sttDiarization.checked);
+                showToast(sttDiarization.checked ? 'Speaker diarization enabled' : 'Speaker diarization disabled', 'success');
+            });
+        }
     }
 
     async function loadGlossaries() {
@@ -3365,7 +3869,7 @@
                         <span class="glossary-item-meta">${g.source_language} → ${g.target_language} · ${g.entry_count} ${g.entry_count === 1 ? 'entry' : 'entries'}</span>
                     </div>
                     <div class="glossary-item-actions">
-                        <button class="btn-danger glossary-delete-btn" data-id="${g.id}">🗑️ Delete</button>
+                        <button class="btn-danger glossary-delete-btn" data-id="${g.id}">${window.Icons ? Icons.svg('trash') : ''} Delete</button>
                     </div>
                 `;
                 item.querySelector('.btn-danger').addEventListener('click', async () => {
@@ -3642,8 +4146,8 @@
 
                     const delC = document.createElement('button');
                     delC.className = 'btn-danger';
-                    delC.style.cssText = 'flex:0 0 auto;font-size:0.75rem;';
-                    delC.textContent = '✕';
+                    delC.style.cssText = 'flex:0 0 auto;padding:4px 7px;line-height:1;';
+                    if (window.Icons) { Icons.set(delC, 'close'); } else { delC.textContent = '✕'; }
                     delC.title = 'Delete concept';
                     delC.addEventListener('click', () => deleteConceptById(cg, c.concept_id));
                     row.appendChild(delC);
@@ -3875,8 +4379,9 @@
             };
 
             if (data.offline) {
-                indicator.style.display = 'inline-block';
-                indicator.textContent = status.forceOffline ? '📡 Offline (Forced)' : '📡 Offline';
+                indicator.style.display = 'inline-flex';
+                indicator.innerHTML = (window.Icons ? Icons.svg('signal', { size: 13 }) : '') +
+                    (status.forceOffline ? ' Offline (Forced)' : ' Offline');
                 indicator.classList.toggle('forced', status.forceOffline);
                 indicator.title = status.forceOffline
                     ? 'Force Offline is active - local services only'
@@ -3936,6 +4441,84 @@
     
     
 
+    // -----------------------------------------------------------------------
+    // Screen-reader announcements
+    //
+    // Every announcement funnels through announce() so that:
+    //   - only categories the user switched on are spoken (all default off),
+    //   - the same message twice in a row is still spoken twice,
+    //   - interim streaming updates, which fire on every word, stay silent.
+    // -----------------------------------------------------------------------
+
+    const A11Y_CATEGORY_SETTINGS = {
+        translations: 'a11y_announce_translations',
+        source: 'a11y_announce_source',
+        micState: 'a11y_announce_mic_state',
+        toasts: 'a11y_announce_toasts',
+    };
+
+    function isAnnounceCategoryEnabled(category) {
+        const key = A11Y_CATEGORY_SETTINGS[category];
+        if (!key) return false;
+        // Read the live settings object (the one updateSetting mutates) rather
+        // than a possibly stale window reference.
+        return !!(userSettings && userSettings[key]);
+    }
+
+    function announce(message, options = {}) {
+        const text = String(message || '').trim();
+        if (!text) return;
+
+        const category = options.category || null;
+        if (category && !isAnnounceCategoryEnabled(category)) return;
+
+        const region = document.getElementById(
+            options.priority === 'assertive' ? 'a11yAssertiveRegion' : 'a11yPoliteRegion'
+        );
+        if (!region) return;
+
+        // Repeating an identical string is usually a no-op for screen readers,
+        // so blank the region and set it again on the next tick.
+        if (region.textContent === text) {
+            region.textContent = '';
+            window.setTimeout(() => { region.textContent = text; }, 60);
+            return;
+        }
+        region.textContent = text;
+    }
+
+    function getLanguageDisplayName(code) {
+        const value = String(code || '').trim();
+        if (!value || value === 'auto') return 'auto-detected';
+        const languages = appConfig.translation?.available_languages || [];
+        const match = languages.find(l => l && l.code === value);
+        return match && match.name ? match.name : value.toUpperCase();
+    }
+
+    // Called only for FINAL results. Interim updates would announce on every
+    // word and make the feature unusable.
+    function announceTranslation(panel, sourceText, translatedText) {
+        if (!translatedText) return;
+        const langName = getLanguageDisplayName(getPanelLanguageCode(panel));
+        const translatedPart = `Translated to ${langName}: ${translatedText}`;
+        const withSource = isAnnounceCategoryEnabled('source') && sourceText;
+        announce(withSource ? `Original: ${sourceText}. ${translatedPart}` : translatedPart, {
+            category: 'translations',
+        });
+    }
+
+    window.announce = announce;
+
+    function bindA11yToggle(elementId, settingKey, label) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        el.checked = !!(userSettings && userSettings[settingKey]);
+        el.addEventListener('change', () => {
+            void updateSetting(settingKey, el.checked);
+            showToast(`${label} ${el.checked ? 'enabled' : 'disabled'}`, 'success');
+        });
+    }
+
     function showToast(message, type = 'info', duration = 4000) {
         const container = document.getElementById('toastContainer');
         const toast = document.createElement('div');
@@ -3943,6 +4526,13 @@
         toast.textContent = message;
         container.appendChild(toast);
         setTimeout(() => toast.remove(), duration);
+
+        // The visible toast is aria-hidden, so speak it through the shared
+        // region instead. Failures jump the queue.
+        announce(message, {
+            category: 'toasts',
+            priority: (type === 'error' || type === 'warning') ? 'assertive' : 'polite',
+        });
     }
 
     function setMicButtonState(button, state, label, stateBadge) {
@@ -3950,6 +4540,7 @@
 
         const nextState = state || 'idle';
         const baseLabel = label || 'Start speaking';
+        const previousState = button.dataset.state;
 
         button.dataset.state = nextState;
         button.classList.toggle('active', nextState === 'active');
@@ -3961,6 +4552,16 @@
             stateBadge.classList.toggle('disabled', nextState === 'disabled');
             stateBadge.textContent =
                 nextState === 'active' ? 'Active' : (nextState === 'disabled' ? 'Disabled' : 'Not active');
+        }
+
+        // Only announce real transitions: the first call after page load would
+        // otherwise report every microphone as "off" on startup.
+        if (previousState && previousState !== nextState) {
+            const side = button.id.includes('Right') ? 'Right' : (button.id.includes('Left') ? 'Left' : '');
+            const micName = side ? `${side} microphone` : 'Microphone';
+            const statusText = nextState === 'active' ? 'on'
+                : (nextState === 'disabled' ? 'unavailable' : 'off');
+            announce(`${micName} ${statusText}`, { category: 'micState' });
         }
 
         if (nextState === 'disabled') {
@@ -4048,10 +4649,42 @@
         return str.charAt(0).toUpperCase() + str.slice(1);
     }
 
+    function getPanelLanguageCode(side) {
+        const value = document.getElementById(`conv${cap(side)}Lang`)?.value || '';
+        return value === 'auto' ? '' : value;
+    }
+
+    // Tag a text node with its language so screen readers switch to the right
+    // voice and browsers apply correct bidi ordering (important for RTL targets).
+    function applyTextLanguage(element, langCode) {
+        if (!element) return;
+        element.setAttribute('dir', 'auto');
+        if (langCode) {
+            element.setAttribute('lang', langCode);
+        } else {
+            element.removeAttribute('lang');
+        }
+    }
+
     
     
     
     let presentationMode = { active: false, panel: 'left' };
+    let focusBeforePresentation = null;
+
+    // Presentation mode covers the app, so hide main from assistive tech (and
+    // move focus out of it first, since an aria-hidden node must not contain
+    // the focused element). Announcements keep working: the shared live regions
+    // live outside <main>.
+    function setMainHiddenForPresentation(hidden) {
+        const main = document.querySelector('main');
+        if (!main) return;
+        if (hidden) {
+            main.setAttribute('aria-hidden', 'true');
+        } else {
+            main.removeAttribute('aria-hidden');
+        }
+    }
 
     function initPresentationMode() {
         const openBtn = document.getElementById('openPresentationMode');
@@ -4076,12 +4709,15 @@
         if (!overlay) return;
         presentationMode.active = true;
         presentationMode.panel = getActivePresentationPanel();
+        focusBeforePresentation = document.activeElement;
         overlay.style.display = 'flex';
         document.body.classList.add('presentation-active');
         updatePresentationPanelButtons();
         updatePresentationLabel();
         clearPresentationText();
         refreshPresentationMicButton();
+        setMainHiddenForPresentation(true);
+        document.getElementById('presentationExit')?.focus();
         if (overlay.requestFullscreen) {
             overlay.requestFullscreen().catch(() => {});
         }
@@ -4136,7 +4772,9 @@
         const inst = convSpeechInstances[side];
         const active = !!(inst && inst.isListening);
         btn.classList.toggle('active', active);
-        btn.textContent = active ? '🔇 Mute Mic' : '🎤 Enable Mic';
+        btn.innerHTML = active
+            ? ((window.Icons ? Icons.svg('mute') : '') + ' Mute Mic')
+            : ((window.Icons ? Icons.svg('mic') : '') + ' Enable Mic');
         btn.title = active
             ? `Mute the microphone (${cap(side)} panel)`
             : `Enable the microphone (${cap(side)} panel)`;
@@ -4147,6 +4785,11 @@
         presentationMode.active = false;
         if (overlay) overlay.style.display = 'none';
         document.body.classList.remove('presentation-active');
+        setMainHiddenForPresentation(false);
+        if (focusBeforePresentation && typeof focusBeforePresentation.focus === 'function') {
+            focusBeforePresentation.focus();
+        }
+        focusBeforePresentation = null;
         if (document.fullscreenElement) {
             document.exitFullscreen().catch(() => {});
         }
@@ -4160,6 +4803,8 @@
             ? langSel.selectedOptions[0].textContent
             : (langSel ? langSel.value : '');
         if (label) label.textContent = name ? `Translation → ${name}` : 'Translation';
+
+        applyTextLanguage(document.getElementById('presentationText'), getPanelLanguageCode(panel));
     }
 
     function clearPresentationText() {

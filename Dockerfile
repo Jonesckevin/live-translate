@@ -20,7 +20,8 @@ FROM ${PYTHON_BASE}
 WORKDIR /app
 # openssl is required by entrypoint.sh (secret generation); ca-certificates is
 # required for Hugging Face / Argos model downloads at runtime.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && \
+    apt-get install -y --no-install-recommends \
     ffmpeg \
     openssl \
     ca-certificates \

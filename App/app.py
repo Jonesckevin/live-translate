@@ -51,6 +51,7 @@ from werkzeug.utils import secure_filename
 from llm_manager import LLMManager
 from translation_manager import TranslationManager
 import whisper_manager
+import diarization_utils
 import glossary_manager
 import session_manager
 import settings_manager
@@ -67,6 +68,20 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or os.urandom(32).hex()
 
 MAX_UPLOAD_MB = int(os.environ.get('MAX_UPLOAD_MB', '25'))
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_MB * 1024 * 1024
+
+# Single source of truth for static asset cache busting. Bump this whenever
+# JS/CSS changes ship: the PWA service worker caches static assets
+# cache-first, so the version tags asset URLs in the templates AND rotates the
+# service worker cache name (see the /sw.js route). Without a bump, browsers
+# keep serving the previous scripts after a rebuild.
+ASSET_VERSION = os.environ.get('ASSET_VERSION', '1.1.7')
+
+# Opt-in speaker diarization for mixed-audio recordings. Live dual-panel
+# sessions do NOT need this: each panel already has its own microphone, so the
+# channel itself identifies the speaker for free.
+STT_DIARIZATION_ENABLED = os.environ.get(
+    'STT_DIARIZATION_ENABLED', 'false'
+).strip().lower() in ('1', 'true', 'yes', 'on')
 
 _cors_origins_raw = os.environ.get('CORS_ALLOWED_ORIGINS', '').strip()
 CORS_ALLOW_ALL = _cors_origins_raw == '*'
@@ -421,6 +436,17 @@ def enforce_require_auth():
             and path.startswith('/api/sessions/')
             and path.endswith('/icon')):
         return None
+    # A signed share code is itself an authorisation for read-only access to a
+    # single session, so a GET carrying a valid one is let through to the
+    # route-level access check (_session_access_error) instead of being rejected
+    # outright as anonymous. Without this the check inside that helper is
+    # unreachable, and anonymously-opened live view links can never load.
+    # Scoped to /api/sessions/<id>/... so a code cannot unlock collection-wide
+    # endpoints such as the session list.
+    if request.method == 'GET' and path.startswith('/api/sessions/'):
+        share_code = _share_code_from_request()
+        if share_code and crypto_manager.verify(share_code, max_age=SHARE_CODE_TTL):
+            return None
     if path.startswith('/api/') and auth_manager.get_current_user() is None:
         return jsonify({'error': 'Authentication required'}), 401
     return None
@@ -466,7 +492,8 @@ def index():
     if nonce:
         g.csp_nonce = nonce
     return render_template('index.html', ga_key=GOOGLE_ANALYTICS_KEY, csp_nonce=nonce,
-                           require_auth=REQUIRE_AUTH, join_code=None)
+                           require_auth=REQUIRE_AUTH, join_code=None,
+                           asset_version=ASSET_VERSION)
 
 
 @app.route('/sw.js')
@@ -475,8 +502,17 @@ def service_worker():
 
     Served from the root path so its scope covers the whole app. Response is
     never cached by the browser so SW updates are picked up on reload.
+
+    The asset version is substituted in here so that shipping new JS/CSS also
+    rotates CACHE_NAME. Rotating the cache name is what makes browsers fetch
+    the new files, since static assets are otherwise served cache-first.
     """
-    response = send_from_directory('static', 'sw.js', mimetype='application/javascript')
+    with open(os.path.join('static', 'sw.js'), 'r', encoding='utf-8') as f:
+        source = f.read()
+    response = app.response_class(
+        source.replace('__ASSET_VERSION__', ASSET_VERSION),
+        mimetype='application/javascript',
+    )
     response.headers['Service-Worker-Allowed'] = '/'
     response.headers['Cache-Control'] = 'no-cache'
     return response
@@ -493,7 +529,8 @@ def web_manifest():
 @app.route('/docs')
 def docs_index():
     return render_template('docs.html', docs=docs_manager.list_docs(),
-                           doc=None, content=None, doc_title=None)
+                           doc=None, content=None, doc_title=None,
+                           asset_version=ASSET_VERSION)
 
 @app.route('/docs/<slug>')
 def docs_view(slug):
@@ -501,9 +538,11 @@ def docs_view(slug):
     html = docs_manager.render(slug)
     if html is None:
         return render_template('docs.html', docs=docs, doc=None, content=None,
-                               not_found=True, doc_title=None), 404
+                               not_found=True, doc_title=None,
+                               asset_version=ASSET_VERSION), 404
     title = next((d['title'] for d in docs if d['slug'] == slug), slug)
-    return render_template('docs.html', docs=docs, doc=slug, content=html, doc_title=title)
+    return render_template('docs.html', docs=docs, doc=slug, content=html, doc_title=title,
+                           asset_version=ASSET_VERSION)
 
 @app.route('/join/<path:code>')
 def join_session_page(code):
@@ -515,7 +554,8 @@ def join_session_page(code):
     if nonce:
         g.csp_nonce = nonce
     return render_template('index.html', ga_key=GOOGLE_ANALYTICS_KEY, csp_nonce=nonce,
-                           require_auth=REQUIRE_AUTH, join_code=code)
+                           require_auth=REQUIRE_AUTH, join_code=code,
+                           asset_version=ASSET_VERSION)
 
 # Cache of supported LibreTranslate language codes (refreshed periodically).
 _supported_langs_cache = {'codes': None, 'ts': 0}
@@ -607,6 +647,7 @@ def get_app_config():
             'registration_enabled': ALLOW_AUTH and ALLOW_USER_REGISTRATION,
             'require_auth': REQUIRE_AUTH,
             'guest_login_enabled': ALLOW_GUEST_LOGIN,
+            'session_sharing_enabled': _session_sharing_enabled(),
         },
         'current_user': (lambda u: {'user_id': u.get('sub'), 'role': u.get('role'),
                                     'is_guest': u.get('is_guest', False)}
@@ -886,6 +927,52 @@ def passkey_login_verify():
     analytics.incr('logins')
     return jsonify({'user': user, 'token': token})
 
+# Bounds for client-supplied conversation context. The client trims to its own
+# settings; these are the server-side ceiling so a client cannot inflate the
+# LLM prompt (and the bill) with an oversized context array.
+MAX_CONTEXT_ITEMS = 12
+MAX_CONTEXT_CHARS = 4000
+MAX_CONTEXT_ITEM_CHARS = 600
+
+
+def _sanitize_context(raw):
+    """Normalize a client-supplied conversation context into a safe list.
+
+    Returns a list of {source_text, translated_text} dicts, bounded by item
+    count and total characters. Anything malformed is dropped rather than
+    failing the translation.
+    """
+    if not isinstance(raw, list):
+        return []
+    cleaned = []
+    total = 0
+    for item in raw[-MAX_CONTEXT_ITEMS:]:
+        if not isinstance(item, dict):
+            continue
+        src = str(item.get('source_text') or item.get('source') or '').strip()
+        tgt = str(item.get('translated_text') or item.get('translated') or '').strip()
+        src = src[:MAX_CONTEXT_ITEM_CHARS]
+        tgt = tgt[:MAX_CONTEXT_ITEM_CHARS]
+        if not src or not tgt:
+            continue
+        if total + len(src) + len(tgt) > MAX_CONTEXT_CHARS:
+            break
+        total += len(src) + len(tgt)
+        cleaned.append({'source_text': src, 'translated_text': tgt})
+    return cleaned
+
+
+def _glossary_terms_for(engine, source_lang, target_lang):
+    """Structured terminology for LLM prompt injection.
+
+    Returns None for non-LLM engines: LibreTranslate takes no prompt, so it
+    relies on placeholder substitution instead.
+    """
+    if engine != 'llm' or not config.get('glossary', {}).get('enabled', True):
+        return None
+    return glossary_manager.get_context_entries_for(source_lang, target_lang)
+
+
 @app.route('/api/translate', methods=['POST'])
 def translate_text():
     data = request.get_json()
@@ -911,8 +998,12 @@ def translate_text():
     glossary = None
     if config.get('glossary', {}).get('enabled', True):
         glossary = glossary_manager.get_entries_for(source_lang, target_lang)
+    glossary_terms = _glossary_terms_for(engine, source_lang, target_lang)
+    context_items = _sanitize_context(data.get('context'))
 
     app_logger.info(f"📝 REST API translation: {source_lang} → {target_lang} via {engine}{f' ({provider})' if provider else ''} | Text: {text[:50]}...")
+    if context_items:
+        app_logger.info(f"🧠 Conversation memory: {len(context_items)} prior turn(s) supplied")
     analytics.incr('translations')
     result = TranslationManager.translate(
         text=text, source_lang=source_lang, target_lang=target_lang,
@@ -920,6 +1011,9 @@ def translate_text():
         api_key=api_key, custom_config=custom_config,
         glossary=glossary if glossary else None,
         ai_auto_correct=data.get('ai_auto_correct', True),
+        context=context_items,
+        glossary_terms=glossary_terms,
+        glossary_mode=data.get('glossary_mode', 'prompt'),
     )
 
     if policy_warning:
@@ -939,6 +1033,9 @@ def translate_text():
                     'source_language': source_lang,
                     'target_language': target_lang,
                     'engine': result.get('engine', engine),
+                    'panel': data.get('panel'),
+                    'speaker': data.get('speaker') or data.get('panel'),
+                    'offset_ms': data.get('offset_ms'),
                 })
                 app_logger.info(f"💾 Message saved to session {session_id}")
         app_logger.info(f"✓ REST translation successful")
@@ -990,6 +1087,9 @@ def translate_multi():
             api_key=api_key, custom_config=custom_config,
             glossary=glossary if glossary else None,
             ai_auto_correct=data.get('ai_auto_correct', True),
+            context=_sanitize_context(data.get('context')),
+            glossary_terms=_glossary_terms_for(engine, source_lang, lang),
+            glossary_mode=data.get('glossary_mode', 'prompt'),
         )
         if policy_warning:
             results[lang]['policy_warning'] = policy_warning
@@ -1151,6 +1251,17 @@ def offline_status():
 def _share_code_from_request():
     return (request.args.get('share') or request.headers.get('X-Share-Code') or '').strip()
 
+
+def _session_sharing_enabled():
+    """Session sharing is available unless an admin turned it off (auth mode).
+
+    Anonymous deployments have no admin settings to consult, so sharing is
+    always available there.
+    """
+    if not ALLOW_AUTH:
+        return True
+    return bool(admin_settings_manager.get_settings().get('allow_session_sharing', True))
+
 def _session_access_error(session_data, action, session_id, user=None):
     """Return None when access is allowed, else a Flask (response, status) tuple.
     No-op (always allowed) when auth is disabled, preserving anonymous behavior.
@@ -1194,10 +1305,14 @@ def list_sessions():
         uid = (user or {}).get('sub')
         is_admin = (user or {}).get('role') == 'admin'
         if not is_admin:
+            # Mirrors session_manager.can_access(): a 'shared' session is reachable
+            # only through its share link, never by browsing. Listing every shared
+            # session leaked their titles to all users and produced entries that
+            # fail with 403 the moment they are opened.
             sessions = [
                 s for s in sessions
                 if s.get('owner_id') is None
-                or s.get('visibility', 'public') in ('public', 'shared')
+                or s.get('visibility', 'public') == 'public'
                 or (uid and s.get('owner_id') == uid)
             ]
     return jsonify({
@@ -1285,6 +1400,8 @@ def update_session(session_id):
     if 'join_password' in data:
         pw = data['join_password']
         kwargs['join_password_hash'] = _hash_session_password(pw) if pw else None
+    if 'speaker_names' in data:
+        kwargs['speaker_names'] = data['speaker_names']
     app_logger.info(f"✏️ Updating session: {session_id} | New title: '{new_title}'")
     result = session_manager.update_session(session_id, **kwargs)
     if result is None:
@@ -1398,7 +1515,7 @@ def share_session(session_id):
     denied = _session_access_error(session_data, 'write', session_id)
     if denied:
         return denied
-    if ALLOW_AUTH and not admin_settings_manager.get_settings().get('allow_session_sharing', True):
+    if not _session_sharing_enabled():
         return jsonify({'error': 'Session sharing is disabled'}), 403
     data = request.get_json(silent=True) or {}
     access = data.get('access', 'view')
@@ -1431,10 +1548,39 @@ def join_session(code):
     })
 
 
-def _build_transcript_lines(msgs):
+def _humanize_speaker_key(key):
+    """Turn a stored speaker key into a readable label.
+
+    'left'/'right' keep their historical capitalisation, 'speaker_2' becomes
+    'Speaker 2', and anything else (a real name) is only capitalised.
+    """
+    if key in ('left', 'right'):
+        return key.capitalize()
+    if key.startswith('speaker_'):
+        suffix = key.split('_', 1)[1]
+        return f'Speaker {suffix}' if suffix.isdigit() else key
+    return key[:1].upper() + key[1:]
+
+
+def _resolve_speaker_label(message, speaker_names=None):
+    """Resolve a display label for a message's speaker.
+
+    Order: explicit rename map -> stored speaker key -> panel -> generic.
+    Keeps legacy sessions (which stored only a panel) working unchanged.
+    """
+    names = speaker_names or {}
+    key = (message.get('speaker') or message.get('panel') or '').strip()
+    if key and key in names:
+        return names[key]
+    if key:
+        return _humanize_speaker_key(key)
+    return 'Speaker'
+
+
+def _build_transcript_lines(msgs, speaker_names=None):
     lines = []
     for m in msgs:
-        speaker = (m.get('speaker') or m.get('panel') or 'Speaker').capitalize()
+        speaker = _resolve_speaker_label(m, speaker_names)
         stamp = m.get('timestamp', '')
         source = m.get('source_text', '')
         translated = m.get('translated_text', '')
@@ -1444,11 +1590,11 @@ def _build_transcript_lines(msgs):
     return lines
 
 
-def _build_fallback_summary(msgs):
+def _build_fallback_summary(msgs, speaker_names=None):
     speakers = {}
     langs = set()
     for m in msgs:
-        sp = (m.get('speaker') or m.get('panel') or 'Speaker').capitalize()
+        sp = _resolve_speaker_label(m, speaker_names)
         speakers[sp] = speakers.get(sp, 0) + 1
         langs.add(f"{m.get('source_language')}->{m.get('target_language')}")
     total = len(msgs)
@@ -1472,7 +1618,7 @@ def session_transcript(session_id):
     msgs = session_data.get('messages', [])
     return jsonify({
         'session_id': session_id,
-        'transcript': '\n'.join(_build_transcript_lines(msgs)),
+        'transcript': '\n'.join(_build_transcript_lines(msgs, session_data.get('speaker_names'))),
         'message_count': len(msgs),
     })
 
@@ -1505,7 +1651,7 @@ def session_summary(session_id):
                 return jsonify({'summary': result['content'].strip(), 'engine': f'llm:{provider}', 'message_count': len(msgs)})
         except Exception as e:
             app_logger.warning(f"LLM summary failed: {e}")
-    return jsonify({'summary': _build_fallback_summary(msgs), 'engine': 'fallback', 'message_count': len(msgs)})
+    return jsonify({'summary': _build_fallback_summary(msgs, session_data.get('speaker_names')), 'engine': 'fallback', 'message_count': len(msgs)})
 
 
 @app.route('/api/qr')
@@ -1534,15 +1680,21 @@ def live_view_page(code):
     payload = crypto_manager.verify(code, max_age=SHARE_CODE_TTL)
     if not payload or not payload.get('sid'):
         return render_template('live.html', session_id='', title='Invalid link', access='view',
-                               error='This live view link is invalid or has expired.'), 404
+                               error='This live view link is invalid or has expired.',
+                               share_code='', asset_version=ASSET_VERSION), 404
     session_id = payload['sid']
     session_data = session_manager.get_session(session_id)
     if session_data is None:
         return render_template('live.html', session_id='', title='Not found', access='view',
-                               error='Session not found.'), 404
+                               error='Session not found.',
+                               share_code='', asset_version=ASSET_VERSION), 404
     title = session_data.get('title') or session_id
+    # The share code is handed to the page because the viewer is anonymous: both
+    # the history fetch and the live socket join must present it to be allowed
+    # to read a non-public session.
     return render_template('live.html', session_id=session_id, title=title,
-                           access=payload.get('access', 'view'), error=None)
+                           access=payload.get('access', 'view'), error=None,
+                           share_code=code, asset_version=ASSET_VERSION)
 
 
 RECORDING_DIR = os.environ.get('RECORDING_DIR', '/data/output')
@@ -1584,6 +1736,77 @@ def get_session_recording(session_id):
     return send_from_directory(RECORDING_DIR, filename)
 
 
+@app.route('/api/sessions/<session_id>/diarize', methods=['POST'])
+def diarize_session(session_id):
+    """Attribute speakers across a session's recording using a diarize model.
+
+    Only meaningful for mixed audio (a single recorded stream). Live dual-panel
+    sessions already attribute correctly by microphone channel, so this is
+    opt-in and disabled unless STT_DIARIZATION_ENABLED is set.
+    """
+    if not STT_DIARIZATION_ENABLED:
+        return jsonify({
+            'error': 'Speaker diarization is disabled. Set STT_DIARIZATION_ENABLED=true to enable it.',
+        }), 503
+
+    session_data = session_manager.get_session(session_id)
+    if session_data is None:
+        return jsonify({'error': 'Session not found'}), 404
+    denied = _session_access_error(session_data, 'write', session_id)
+    if denied:
+        return denied
+
+    filename = session_data.get('recording_filename')
+    if not filename or os.path.basename(filename) != filename:
+        return jsonify({'error': 'This session has no recording to diarize'}), 400
+
+    payload = request.get_json(silent=True) or {}
+    provider = (payload.get('provider') or '').strip()
+    model = (payload.get('model') or '').strip()
+    if not provider or not model:
+        return jsonify({'error': 'provider and model are required'}), 400
+    if 'diarize' not in model.lower():
+        return jsonify({'error': f'{model} does not produce speaker labels'}), 400
+
+    try:
+        with open(os.path.join(RECORDING_DIR, filename), 'rb') as audio_file:
+            audio_data = audio_file.read()
+    except OSError:
+        app_logger.warning(f"Diarize requested but recording is unreadable: {filename}")
+        return jsonify({'error': 'Recording file is missing'}), 404
+
+    api_key, _ = get_api_key(provider, request.headers)
+    transcription = LLMManager.transcribe_audio(
+        provider=provider,
+        model=model,
+        audio_data=audio_data,
+        filename=filename,
+        api_key=api_key,
+        language=payload.get('language'),
+    )
+    if not transcription.get('success'):
+        return jsonify({'error': transcription.get('error', 'Transcription failed')}), 502
+
+    segments = transcription.get('segments') or []
+    assignments = diarization_utils.assign_speakers(
+        session_data.get('messages') or [], segments
+    )
+    mapping = diarization_utils.speaker_index_map(assignments)
+    if mapping:
+        session_manager.set_message_speakers(session_id, mapping)
+    app_logger.info(
+        f"🗣️ Diarization for session {session_id}: {len(segments)} segment(s), "
+        f"{len(mapping)} message(s) attributed"
+    )
+    return jsonify({
+        'success': True,
+        'diarized': bool(transcription.get('diarized')),
+        'segment_count': len(segments),
+        'attributed_count': len(mapping),
+        'speakers': sorted(set(mapping.values())),
+    })
+
+
 def admin_api(view):
     """Require auth enabled + a valid admin JWT; else 404 / 401 / 403."""
     @wraps(view)
@@ -1601,7 +1824,7 @@ def admin_api(view):
 
 @app.route('/admin')
 def admin_dashboard_page():
-    return render_template('admin-dashboard.html')
+    return render_template('admin-dashboard.html', asset_version=ASSET_VERSION)
 
 @app.route('/api/admin/stats')
 @admin_api
@@ -2115,10 +2338,45 @@ def handle_disconnect(*args):
 
 @socketio.on('join_session_room')
 def handle_join_session_room(data):
-    """Join a SocketIO room so other clients in the same session can push updates."""
-    session_id = ((data or {}).get('session_id') or '').strip()
-    if session_id and session_manager._is_safe_id(session_id):
-        join_room(f'session:{session_id}')
+    """Join a SocketIO room so other clients in the same session can push updates.
+
+    Access is checked the same way as the HTTP path: a signed share code may
+    subscribe to a shared session, otherwise the caller must be allowed to read
+    it. Without this check, live captions for any session would be joinable by
+    anyone who knows (or guesses) a session id.
+    """
+    payload = data if isinstance(data, dict) else {}
+    session_id = (payload.get('session_id') or '').strip()
+    if not session_id or not session_manager._is_safe_id(session_id):
+        return
+
+    session_data = session_manager.get_session(session_id)
+    if session_data is None:
+        emit('session_join_denied', {'session_id': session_id, 'error': 'Session not found'})
+        return
+
+    # Anonymous deployments deliberately have no access control, matching
+    # _session_access_error().
+    if ALLOW_AUTH:
+        share_ok = False
+        share_access = None
+        code = (payload.get('share_code') or '').strip()
+        if code:
+            verified = crypto_manager.verify(code, max_age=SHARE_CODE_TTL)
+            if verified and verified.get('sid') == session_id:
+                share_ok = True
+                share_access = verified.get('access') or 'view'
+        user = _socket_users.get(request.sid)
+        if not session_manager.can_access(session_data, user, 'read',
+                                          share_ok=share_ok, share_access=share_access):
+            app_logger.warning(f"Denied socket room join for session {session_id}")
+            emit('session_join_denied', {
+                'session_id': session_id,
+                'error': 'Not authorised for this session',
+            })
+            return
+
+    join_room(f'session:{session_id}')
 
 @socketio.on('leave_session_room')
 def handle_leave_session_room(data):
@@ -2174,8 +2432,12 @@ def handle_translate(data):
     glossary = None
     if config.get('glossary', {}).get('enabled', True):
         glossary = glossary_manager.get_entries_for(source_lang, target_lang)
+    glossary_terms = _glossary_terms_for(engine, source_lang, target_lang)
+    context_items = _sanitize_context(data.get('context'))
 
     app_logger.info(f"🔄 Translation request: {source_lang} → {target_lang} via {engine}{f' ({provider})' if provider else ''} | Text length: {len(text)} chars")
+    if context_items:
+        app_logger.info(f"🧠 Conversation memory: {len(context_items)} prior turn(s) supplied")
     analytics.incr('translations')
 
     result = TranslationManager.translate(
@@ -2184,7 +2446,9 @@ def handle_translate(data):
         api_key=api_key, custom_config=custom_config,
         glossary=glossary if glossary else None,
         ai_auto_correct=data.get('ai_auto_correct', True),
-        context=data.get('context'),
+        context=context_items,
+        glossary_terms=glossary_terms,
+        glossary_mode=data.get('glossary_mode', 'prompt'),
     )
 
     if policy_warning:
@@ -2205,7 +2469,9 @@ def handle_translate(data):
                 api_key=fallback_api_key, custom_config=custom_config,
                 glossary=glossary if glossary else None,
                 ai_auto_correct=data.get('ai_auto_correct', True),
-                context=data.get('context'),
+                context=context_items,
+                glossary_terms=_glossary_terms_for('llm', source_lang, target_lang),
+                glossary_mode=data.get('glossary_mode', 'prompt'),
             )
             if result.get('success'):
                 result['engine'] = f'llm:{fallback_provider} (fallback)'
@@ -2217,6 +2483,10 @@ def handle_translate(data):
 
     result['panel'] = panel
     result['original_text'] = text
+    # Echoed so the client can record this turn's language pair in its
+    # conversation context without having to track it per panel.
+    result['source_language'] = source_lang
+    result['target_language'] = target_lang
     result['live_mode'] = live_mode
     result['interim'] = interim
     result['request_id'] = request_id
@@ -2266,6 +2536,34 @@ def _start_guest_archive_thread():
     t = threading.Thread(target=_guest_archive_loop, daemon=True, name='guest-archive')
     t.start()
 
+# Placeholder secret values that must never reach production. Matched
+# case-insensitively as SUBSTRINGS, because real deployments end up with strings
+# like '# change-me-this-should-be-32-chars-minimum-for-security!' — which the
+# previous exact-match set ('change-me') silently accepted.
+_PLACEHOLDER_SECRET_MARKERS = (
+    'change-me', 'change_me', 'changeme', 'changethis', 'change-this',
+    'replace-me', 'replace_me', 'your-secret', 'yoursecret', 'your_secret',
+    'placeholder', 'secret-key-here', 'minimum-for-security', 'insecure',
+    'not-a-real', 'example-secret',
+)
+
+
+def _secret_is_placeholder(value):
+    """True when a secret carries an obvious placeholder marker."""
+    if not value:
+        return False
+    lowered = str(value).strip().lower()
+    return any(marker in lowered for marker in _PLACEHOLDER_SECRET_MARKERS)
+
+
+def _secret_is_weak(value):
+    """True when a non-placeholder secret is still too short/low-entropy."""
+    lowered = str(value or '').strip().lower()
+    if not lowered:
+        return False
+    return len(lowered) < 32 or len(set(lowered)) < 8
+
+
 def validate_security_config():
     """Log the security posture at startup and fail hard when a production
     deployment is missing required secrets. Local/dev use is never blocked."""
@@ -2308,12 +2606,30 @@ def validate_security_config():
             "clients can override server keys. Disable if that is not intended."
         )
 
-    _weak = {'', 'change-me', 'change-me-to-a-random-string', 'changeme', 'secret'}
-    if os.environ.get('SECRET_KEY', '') in _weak or os.environ.get('SECRETS', '') in _weak:
-        app_logger.warning(
-            "⚠ SECURITY: SECRET_KEY/SECRETS is a placeholder value — replace it with a "
-            "strong random value: openssl rand -hex 32"
-        )
+    for _name in ('SECRET_KEY', 'SECRETS'):
+        _value = (os.environ.get(_name) or '').strip()
+        if not _value:
+            # Empty values are already handled: crypto_manager falls back to an
+            # ephemeral key for SECRETS, and entrypoint.sh generates and persists
+            # one for both when they are unset.
+            continue
+        if _secret_is_placeholder(_value):
+            _msg = (
+                f"{_name} is still a placeholder value (matched a 'change-me'-style "
+                "marker). Generate a real one with: openssl rand -hex 32"
+            )
+            if REQUIRE_SECRETS or IS_PRODUCTION:
+                blocking.append(_msg)
+                app_logger.error(f"✗ SECURITY: {_msg}")
+            else:
+                app_logger.warning(f"⚠ SECURITY: {_msg}")
+        elif _secret_is_weak(_value):
+            app_logger.warning(
+                f"⚠ SECURITY: {_name} is shorter or less random than recommended — "
+                "use 32 random bytes (openssl rand -hex 32)."
+            )
+        else:
+            app_logger.info(f"✓ {_name} configured")
 
     if blocking and (REQUIRE_SECRETS or IS_PRODUCTION):
         raise SystemExit(

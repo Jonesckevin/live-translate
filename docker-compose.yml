@@ -38,6 +38,7 @@ services:
       WHISPER_USE_GPU: ${WHISPER_USE_GPU:-false}                    # Use GPU for faster transcription (requires NVIDIA CUDA)
       WHISPER_MODEL_DIR: ${WHISPER_MODEL_DIR:-/data/whisper-model}  # Cache directory for downloaded models
       WHISPER_PRELOAD_ON_STARTUP: ${WHISPER_PRELOAD_ON_STARTUP:-true} # Pre-load model on container start (faster first use)
+      STT_DIARIZATION_ENABLED: ${STT_DIARIZATION_ENABLED:-false}   # Attribute speakers in session recordings via a diarizing STT model; not needed for live 2-panel use
       
       ## == Translation Engine ==
       LIBRETRANSLATE_LOCAL_ENABLED: ${LIBRETRANSLATE_LOCAL_ENABLED:-true} # Use local LibreTranslate (offline, slower) vs cloud API

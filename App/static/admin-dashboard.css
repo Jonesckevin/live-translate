@@ -22,8 +22,8 @@
 .admin-brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 1.05rem; }
 .admin-logo {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 30px; height: 30px; border-radius: 8px;
-    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+    width: 30px; height: 30px; border-radius: var(--radius-md);
+    background: var(--accent-primary);
     color: #fff; font-weight: 700; font-size: 0.8rem;
 }
 .admin-topbar-right { display: flex; align-items: center; gap: 10px; }

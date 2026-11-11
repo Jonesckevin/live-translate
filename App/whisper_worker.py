@@ -70,7 +70,11 @@ def _transcribe(audio_path, language, model_name):
         segs = []
         for seg in segments:
             text_parts.append(seg.text)
-            segs.append({'start': round(seg.start, 2), 'end': round(seg.end, 2), 'text': seg.text.strip()})
+            segs.append({'start': round(seg.start, 2), 'end': round(seg.end, 2),
+                         'text': seg.text.strip(),
+                         # faster-whisper has no diarization; the key is present so
+                         # both STT paths share one segment shape.
+                         'speaker': None})
         return {
             'success': True,
             'text': ' '.join(text_parts).strip(),

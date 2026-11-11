@@ -60,6 +60,15 @@
   var modalSetTab = null;
 
   
+  // Small helper so JS-built buttons get the same inline SVG set as the
+  // templates (emoji rendered inconsistently and could not inherit colour).
+  function iconSpan(name) {
+    var s = document.createElement('span');
+    s.className = 'auth-icon';
+    s.innerHTML = window.Icons ? Icons.svg(name) : '';
+    return s;
+  }
+
   function h(tag, attrs, kids) {
     var e = document.createElement(tag);
     attrs = attrs || {};
@@ -292,13 +301,15 @@
             onAuthenticated(res.token, true);
           }).catch(function (err) {
             pkSignInBtn.disabled = false;
-            pkSignInBtn.textContent = '\uD83D\uDD11 Sign in with Passkey';
+            pkSignInBtn.innerHTML = '';
+            pkSignInBtn.appendChild(iconSpan('lock'));
+            pkSignInBtn.appendChild(document.createTextNode(' Sign in with Passkey'));
             if (err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
               showError(err.message || 'Passkey sign-in failed');
             }
           });
         }
-      }, ['\uD83D\uDD11 Sign in with Passkey']);
+      }, [iconSpan('lock'), ' Sign in with Passkey']);
       passkeySignInSection = h('div', { class: 'auth-passkey-section' }, [
         h('div', { class: 'auth-divider' }, ['or']),
         pkSignInBtn
@@ -315,13 +326,15 @@
               onAuthenticated(res.token, true);
             }).catch(function (err) {
               pkRegBtn.disabled = false;
-              pkRegBtn.textContent = '\uD83D\uDD11 Register with Passkey';
+              pkRegBtn.innerHTML = '';
+              pkRegBtn.appendChild(iconSpan('lock'));
+              pkRegBtn.appendChild(document.createTextNode(' Register with Passkey'));
               if (err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
                 showError(err.message || 'Passkey registration failed');
               }
             });
           }
-        }, ['\uD83D\uDD11 Register with Passkey']);
+        }, [iconSpan('lock'), ' Register with Passkey']);
         passkeyRegSection = h('div', { class: 'auth-passkey-section' }, [
           h('div', { class: 'auth-divider' }, ['or, skip the password']),
           h('p', { class: 'auth-guest-note' }, ['Use the username (and optional email) above, then confirm with your device biometrics or PIN. No password needed.']),
@@ -400,7 +413,9 @@
     var headerKids = [h('h2', { text: 'Live Translate — Account' })];
     
     if (!required) {
-      headerKids.push(h('button', { class: 'icon-btn', title: 'Close', type: 'button', onclick: closeModal }, ['✕']));
+      var closeIconEl = document.createElement('span');
+      closeIconEl.innerHTML = window.Icons ? Icons.svg('close') : '✕';
+      headerKids.push(h('button', { class: 'icon-btn', title: 'Close', type: 'button', onclick: closeModal }, [closeIconEl]));
     }
     var hdr = h('div', { class: 'app-modal-header' }, headerKids);
     var dialog = h('div', { class: 'app-modal-dialog auth-dialog' }, [hdr, body]);
@@ -438,13 +453,11 @@
     menu.appendChild(h('button', { class: 'auth-menu-item auth-menu-danger', type: 'button', onclick: logout }, ['Log out']));
 
     var isGuest = user.role === 'guest' || user.is_guest;
-    var label = '\uD83D\uDC64 ' + user.username
-      + (isGuest ? ' (guest)' : (user.role === 'admin' ? ' (admin)' : ''))
-      + ' \u25BE';
+    var suffix = isGuest ? ' (guest)' : (user.role === 'admin' ? ' (admin)' : '');
     var chip = h('button', {
       class: 'btn-secondary auth-chip' + (isGuest ? ' auth-chip-guest' : ''), type: 'button',
       onclick: function (e) { e.stopPropagation(); menu.classList.toggle('open'); }
-    }, [label]);
+    }, [iconSpan('users'), user.username + suffix, iconSpan('chevronDown')]);
     headerEl.appendChild(h('div', { class: 'auth-chip-wrap' }, [chip, menu]));
     document.addEventListener('click', function () { menu.classList.remove('open'); });
   }
